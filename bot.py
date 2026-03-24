@@ -1,9 +1,25 @@
 from playwright.sync_api import sync_playwright
 from datetime import datetime
+import pytz
 import requests
 import json
 import os
 import hashlib
+
+# ===============================
+# TIMEZONE S├âO PAULO
+# ===============================
+TZ_SP = pytz.timezone("America/Sao_Paulo")
+
+# ===============================
+# MAPEAMENTO DE NOMES DAS LOJAS
+# ===============================
+NOMES_LOJAS = {
+    "MG - JOAO MONLEVADE - CARNEIRINHOS": "JM",
+    "MG - PATROCINIO - CENTRO": "PATROCINIO",
+    "MG - UB├ü - CENTRO": "UBA",
+    "SP - IBIUNA - CENTRO": "IBIUNA",
+}
 
 # ===============================
 # CREDENCIAIS EVUP
@@ -46,22 +62,22 @@ def gerar_hash(lojas):
 
 def clicar_relatorios(page):
     tentativas = [
-        page.get_by_text("Relatórios", exact=True),
-        page.locator("a:has-text('Relatórios')").first,
-        page.locator("span:has-text('Relatórios')").first,
-        page.locator("text=Relatórios").first,
+        page.get_by_text("Relat├│rios", exact=True),
+        page.locator("a:has-text('Relat├│rios')").first,
+        page.locator("span:has-text('Relat├│rios')").first,
+        page.locator("text=Relat├│rios").first,
     ]
     for i, locator in enumerate(tentativas, start=1):
         try:
-            print(f"Tentativa {i} para clicar em 'Relatórios'...")
+            print(f"Tentativa {i} para clicar em 'Relat├│rios'...")
             locator.wait_for(timeout=10000)
             locator.scroll_into_view_if_needed(timeout=5000)
             locator.click(timeout=10000)
-            print("OK: clique em Relatórios.")
+            print("OK: clique em Relat├│rios.")
             return
         except Exception as e:
             print(f"Falhou tentativa {i}: {e}")
-    raise Exception("Não conseguiu clicar em Relatórios")
+    raise Exception("N├úo conseguiu clicar em Relat├│rios")
 
 
 def clicar_vendas(page):
@@ -80,7 +96,7 @@ def clicar_vendas(page):
             return
         except Exception as e:
             print(f"Falhou tentativa {i}: {e}")
-    raise Exception("Não conseguiu clicar em Vendas")
+    raise Exception("N├úo conseguiu clicar em Vendas")
 
 
 def clicar_busca(page):
@@ -99,12 +115,13 @@ def clicar_busca(page):
             return
         except Exception as e:
             print(f"Falhou tentativa {i}: {e}")
-    raise Exception("Não conseguiu clicar em BUSCA")
+    raise Exception("N├úo conseguiu clicar em BUSCA")
 
 
 def extrair_dados_tabela(page):
     print("Extraindo dados da tabela...")
 
+    # Aguarda a tabela carregar ap├│s o BUSCA
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except:
@@ -112,6 +129,7 @@ def extrair_dados_tabela(page):
 
     page.wait_for_timeout(3000)
 
+    # Tenta aguardar linha de dados aparecer (at├® 15s)
     for tentativa in range(3):
         dados = page.evaluate("""
             () => {
@@ -120,13 +138,17 @@ def extrair_dados_tabela(page):
 
                 rows.forEach(row => {
                     const cells = Array.from(row.querySelectorAll('td'));
-                    if (cells.length < 10) return;
+                    if (cells.length < 10) return; // Apenas linhas detalhadas (muitas colunas)
 
                     const texts = cells.map(c => c.innerText?.trim() || '');
 
+                    // Acha o nome da loja pelo padr├úo XX - CIDADE
                     const loja = texts.find(t => /^[A-Z]{2}\\s+-\\s+/.test(t));
                     if (!loja) return;
 
+                    // Encontra o ├║ltimo grupo consecutivo de valores R$
+                    // Ordem das colunas: V. Bruto | V. Desconto | V. L├¡quido
+                    // Logo o ├ÜLTIMO R$ de cada grupo = V. L├¡quido
                     let grupoAtual = [];
                     let ultimoGrupo = [];
 
@@ -142,12 +164,14 @@ def extrair_dados_tabela(page):
                     }
                     if (grupoAtual.length > 0) ultimoGrupo = grupoAtual;
 
+                    // O ├║ltimo valor do grupo = V. L├¡quido
                     if (ultimoGrupo.length >= 1) {
                         const valorLiquido = ultimoGrupo[ultimoGrupo.length - 1];
                         resultado.push({ loja: loja, valor_liquido: valorLiquido });
                     }
                 });
 
+                // Busca total no rodap├®
                 let total = '';
                 const footerRows = document.querySelectorAll('.k-grid-footer tr, tfoot tr');
                 footerRows.forEach(row => {
@@ -187,15 +211,27 @@ def extrair_dados_tabela(page):
     return dados
 
 
+def valor_para_numero(valor_str):
+    """Converte 'R$1.234,56' para float 1234.56 para ordena├º├úo."""
+    try:
+        return float(valor_str.replace("R$", "").replace(".", "").replace(",", "."))
+    except:
+        return 0.0
+
+
 def formatar_mensagem(dados, data_ref, hora_ref):
     lojas = dados.get("lojas", [])
     total = dados.get("total", "")
 
-    linhas = [f"*Relatório de Vendas {data_ref} {hora_ref}*\n"]
+    # Ordena por valor decrescente
+    lojas_ordenadas = sorted(lojas, key=lambda x: valor_para_numero(x["valor_liquido"]), reverse=True)
 
-    for item in lojas:
-        valor = item['valor_liquido']
-        linhas.append(f"{item['loja']} - {valor}")
+    linhas = [f"*Relat├│rio de Vendas {data_ref} {hora_ref}*\n"]
+
+    for item in lojas_ordenadas:
+        nome_original = item["loja"]
+        nome_curto = NOMES_LOJAS.get(nome_original, nome_original)
+        linhas.append(f"{nome_curto} - {item['valor_liquido']}")
 
     if total:
         linhas.append(f"\nTotal - {total}")
@@ -204,11 +240,11 @@ def formatar_mensagem(dados, data_ref, hora_ref):
 
 
 def main():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Iniciando verificação...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Iniciando verifica├º├úo...")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,
+            headless=True,  # invis├¡vel para rodar na nuvem
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         context = browser.new_context(viewport={"width": 1366, "height": 900})
@@ -240,11 +276,11 @@ def main():
 
         page.wait_for_timeout(10000)
 
-        # 4) Relatórios
+        # 4) Relat├│rios
         try:
             clicar_relatorios(page)
         except Exception as e:
-            print("Erro ao clicar em Relatórios:", e)
+            print("Erro ao clicar em Relat├│rios:", e)
             browser.close()
             return
 
@@ -271,22 +307,23 @@ def main():
         page.wait_for_timeout(6000)
 
         # 7) Extrair dados
-        data_ref = datetime.now().strftime("%d/%m/%Y")
-        hora_ref = datetime.now().strftime("%H:%M")
+        agora_sp = datetime.now(TZ_SP)
+        data_ref = agora_sp.strftime("%d/%m/%Y")
+        hora_ref = agora_sp.strftime("%H:%M")
         dados = extrair_dados_tabela(page)
         browser.close()
 
-    # 8) Verificar se há vendas
+    # 8) Verificar se h├í vendas
     lojas = dados.get("lojas", [])
 
     if not lojas:
         print("Sem vendas no momento. Nada enviado.")
         return
 
-    # 9) Verificar se já enviou esses mesmos dados
+    # 9) Verificar se j├í enviou esses mesmos dados
     hash_atual = gerar_hash(lojas)
     if ja_enviado(data_ref, hash_atual):
-        print("Dados já enviados anteriormente. Nada a fazer.")
+        print("Dados j├í enviados anteriormente. Nada a fazer.")
         return
 
     # 10) Formatar e enviar
@@ -306,14 +343,14 @@ def main():
         response = requests.post(WEBHOOK_URL, json=payload, timeout=60)
         print("Resposta:", response.status_code, response.text)
 
-        # 11) Salvar estado para não duplicar
+        # 11) Salvar estado para n├úo duplicar
         salvar_estado(data_ref, hash_atual)
-        print("Estado salvo. Próxima execução só envia se houver novos dados.")
+        print("Estado salvo. Pr├│xima execu├º├úo s├│ envia se houver novos dados.")
 
     except Exception as e:
         print("Erro ao enviar para o Webhook:", e)
 
-    print("Concluído.")
+    print("Conclu├¡do.")
 
 
 if __name__ == "__main__":
