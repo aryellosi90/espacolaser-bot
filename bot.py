@@ -105,7 +105,6 @@ def clicar_busca(page):
 def extrair_dados_tabela(page):
     print("Extraindo dados da tabela...")
 
-    # Aguarda a tabela carregar após o BUSCA
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except:
@@ -113,7 +112,6 @@ def extrair_dados_tabela(page):
 
     page.wait_for_timeout(3000)
 
-    # Tenta aguardar linha de dados aparecer (até 15s)
     for tentativa in range(3):
         dados = page.evaluate("""
             () => {
@@ -122,17 +120,13 @@ def extrair_dados_tabela(page):
 
                 rows.forEach(row => {
                     const cells = Array.from(row.querySelectorAll('td'));
-                    if (cells.length < 10) return; // Apenas linhas detalhadas (muitas colunas)
+                    if (cells.length < 10) return;
 
                     const texts = cells.map(c => c.innerText?.trim() || '');
 
-                    // Acha o nome da loja pelo padrão XX - CIDADE
                     const loja = texts.find(t => /^[A-Z]{2}\\s+-\\s+/.test(t));
                     if (!loja) return;
 
-                    // Encontra o último grupo consecutivo de valores R$
-                    // Ordem das colunas: V. Bruto | V. Desconto | V. Líquido
-                    // Logo o ÚLTIMO R$ de cada grupo = V. Líquido
                     let grupoAtual = [];
                     let ultimoGrupo = [];
 
@@ -148,14 +142,12 @@ def extrair_dados_tabela(page):
                     }
                     if (grupoAtual.length > 0) ultimoGrupo = grupoAtual;
 
-                    // O último valor do grupo = V. Líquido
                     if (ultimoGrupo.length >= 1) {
                         const valorLiquido = ultimoGrupo[ultimoGrupo.length - 1];
                         resultado.push({ loja: loja, valor_liquido: valorLiquido });
                     }
                 });
 
-                // Busca total no rodapé
                 let total = '';
                 const footerRows = document.querySelectorAll('.k-grid-footer tr, tfoot tr');
                 footerRows.forEach(row => {
@@ -216,7 +208,7 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,  # invisível para rodar na nuvem
+            headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         context = browser.new_context(viewport={"width": 1366, "height": 900})
