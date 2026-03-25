@@ -1,0 +1,12 @@
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+RUN playwright install chromium
+
+COPY bot_agendamentos.py .
+COPY scheduler_agendamentos.py .
+
+CMD ["python", "scheduler_agendamentos.py"]
