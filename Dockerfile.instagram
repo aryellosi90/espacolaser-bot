@@ -1,0 +1,39 @@
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+
+WORKDIR /app
+
+# Dependências Python
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+RUN playwright install chromium
+
+# Arquivos da automação de Instagram
+COPY instagram_poster.py .
+COPY token_helper.py .
+COPY tokens.json .
+
+# Agendamento: roda todo dia às 9h, 12h e 18h (horário de Brasília = UTC-3)
+# Instala cron
+RUN apt-get update && apt-get install -y cron tzdata && \
+    ln -sf /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime && \
+    echo "America/Sao_Paulo" > /etc/timezone
+
+# Crontab: 10h e 18h (horário de Brasília)
+# O script verifica sozinho se já postou hoje — se sim, a execução das 18h é ignorada
+RUN echo "0 10 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>&1" > /etc/cron.d/instagram && \
+    echo "0 18 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>&1" >> /etc/cron.d/instagram && \
+    chmod 0644 /etc/cron.d/instagram && \
+    crontab /etc/cron.d/instagram
+
+# Variáveis de ambiente esperadas no Railway:
+# SISMAKER_LOGIN   — e-mail de login no Sismaker
+# SISMAKER_SENHA   — senha do Sismaker
+# IMGBB_API_KEY    — chave da API do imgbb.com
+# IG_CAPTION       — legenda dos posts (opcional)
+# HEADLESS         — true (padrão)
+# ZAPI_INSTANCE    — ID da instância Z-API
+# ZAPI_TOKEN       — Token da instância Z-API
+# ZAPI_PHONE       — Número WhatsApp destino (ex: 5511964115060)
+
+# Script de inicialização: sobe o cron e mantém container vivo
+CMD cron && tail -f /app/poster.log

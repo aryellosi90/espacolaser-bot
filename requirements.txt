@@ -1,0 +1,8 @@
+playwright==1.44.0
+requests==2.31.0
+pytz
+schedule
+pandas
+openpyxl
+matplotlib
+Pillow
