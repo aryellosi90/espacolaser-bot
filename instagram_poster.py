@@ -369,7 +369,8 @@ def buscar_posts(data_alvo: str = "") -> dict:
         data_iso   = hoje_dt.strftime("%Y-%m-%d")    # "2026-04-03"
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    resultado = {"feeds": [], "stories": [], "caption": CAPTION_PADRAO}
+    # feeds e stories são listas de {"path": Path, "caption": str}
+    resultado = {"feeds": [], "stories": []}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -471,31 +472,27 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     print(f"  [AVISO] Download {label}: {e}")
                     return None, None
 
-            arquivos_baixados = []
+            arquivos_baixados = []  # lista de (Path, caption_str)
             for i in range(qtd):  # baixa TODOS os botões disponíveis
                 arq, cap = baixar_arquivo(i, str(i))
                 if arq:
-                    arquivos_baixados.append(arq)
-                # Usa a primeira legenda encontrada nos ZIPs
-                if cap and resultado["caption"] == CAPTION_PADRAO:
-                    resultado["caption"] = cap
-                    print(f"  Legenda do ZIP aplicada.")
+                    arquivos_baixados.append((arq, cap or CAPTION_PADRAO))
                 page.wait_for_timeout(800)
 
             # ── 6. Classificar feed vs story pelo aspect ratio ─────────────
             # Story: 9:16 → ratio ≈ 0.56  |  Feed: 4:5 → ratio = 0.80+
             from PIL import Image as _PIL
-            for arq in arquivos_baixados:
+            for arq, cap in arquivos_baixados:
                 try:
                     img = _PIL.open(arq)
                     ratio = img.width / img.height
                     img.close()
                     if ratio < 0.7:
-                        resultado["stories"].append(arq)
-                        print(f"  → Story identificado: {arq.name} ({ratio:.2f})")
+                        resultado["stories"].append({"path": arq, "caption": cap})
+                        print(f"  → Story: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                     else:
-                        resultado["feeds"].append(arq)
-                        print(f"  → Feed identificado: {arq.name} ({ratio:.2f})")
+                        resultado["feeds"].append({"path": arq, "caption": cap})
+                        print(f"  → Feed:  {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                 except Exception as e:
                     print(f"  [AVISO] Não foi possível classificar {arq.name}: {e}")
 
@@ -542,34 +539,33 @@ def main():
     print(f"\n[1/3] Buscando posts de {label} no Sismaker...")
     posts = buscar_posts(data_busca)
 
-    feeds   = posts["feeds"]    # lista de Paths
-    stories = posts["stories"]  # lista de Paths
-    caption = posts["caption"]
+    feeds   = posts["feeds"]    # lista de {"path": Path, "caption": str}
+    stories = posts["stories"]  # lista de {"path": Path, "caption": str}
 
     if not feeds and not stories:
         print(f"\n  Nenhum arquivo baixado para {label}. Encerrando.")
         return
 
-    print(f"\n  Feeds encontrados:  {len(feeds)}")
+    print(f"\n  Feeds encontrados:   {len(feeds)}")
     print(f"  Stories encontrados: {len(stories)}")
-    print(f"  Legenda: {caption[:80]}...")
 
     # 3. Preparar imagens e fazer upload para URL pública
+    # feed_urls e story_urls são listas de (url, caption)
     print("\n[2/3] Preparando e fazendo upload das imagens...")
     feed_urls  = []
     story_urls = []
 
-    for i, fp in enumerate(feeds):
-        url = upload_imgbb(preparar_imagem(fp, f"feed_{i}"), imgbb_key)
+    for i, item in enumerate(feeds):
+        url = upload_imgbb(preparar_imagem(item["path"], f"feed_{i}"), imgbb_key)
         if url:
-            feed_urls.append(url)
-            print(f"  Feed {i+1} URL: {url}")
+            feed_urls.append((url, item["caption"]))
+            print(f"  Feed {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
-    for i, sp in enumerate(stories):
-        url = upload_imgbb(preparar_imagem(sp, f"story_{i}"), imgbb_key)
+    for i, item in enumerate(stories):
+        url = upload_imgbb(preparar_imagem(item["path"], f"story_{i}"), imgbb_key)
         if url:
-            story_urls.append(url)
-            print(f"  Story {i+1} URL: {url}")
+            story_urls.append((url, item["caption"]))
+            print(f"  Story {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
     if not feed_urls and not story_urls:
         print("  Falha no upload de todas as imagens. Encerrando.")
@@ -595,13 +591,13 @@ def main():
         ok_feeds   = []
         ok_stories = []
 
-        for feed_url in feed_urls:
-            ok = postar_instagram(ig_user_id, token, feed_url, caption, is_story=False)
+        for feed_url, cap in feed_urls:
+            ok = postar_instagram(ig_user_id, token, feed_url, cap, is_story=False)
             ok_feeds.append(ok)
             time.sleep(3)
 
-        for story_url in story_urls:
-            ok = postar_instagram(ig_user_id, token, story_url, caption, is_story=True)
+        for story_url, cap in story_urls:
+            ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True)
             ok_stories.append(ok)
             time.sleep(3)
 
