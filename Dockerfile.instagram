@@ -36,4 +36,4 @@ RUN echo "0 10 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>
 # ZAPI_PHONE       — Número WhatsApp destino (ex: 5511964115060)
 
 # Script de inicialização: sobe o cron e mantém container vivo
-CMD cron && tail -f /app/poster.log
+CMD touch /app/poster.log && cron -f
