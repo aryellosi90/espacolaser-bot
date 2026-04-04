@@ -278,27 +278,63 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
 
 # ─── Helpers de arquivo ──────────────────────────────────────────────────────
 
-def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> Path | None:
-    """Extrai a primeira imagem (jpg/png/jpeg) de um ZIP e retorna o caminho."""
+def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
+    """Extrai imagem e tenta extrair legenda (TXT/PDF) de um ZIP.
+    Retorna: (Path|None, str|None) — (caminho_imagem, texto_legenda)
+    """
     extensoes_imagem = {".jpg", ".jpeg", ".png"}
+    img_path = None
+    caption_text = None
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
-            imagens = [n for n in z.namelist()
-                       if Path(n).suffix.lower() in extensoes_imagem]
-            if not imagens:
+            nomes = z.namelist()
+            imagens = [n for n in nomes if Path(n).suffix.lower() in extensoes_imagem]
+            textos  = [n for n in nomes if Path(n).suffix.lower() == ".txt"]
+            pdfs    = [n for n in nomes if Path(n).suffix.lower() == ".pdf"]
+
+            # Extrai imagem (maior arquivo = maior qualidade)
+            if imagens:
+                imagens.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
+                nome_img = imagens[0]
+                ext = Path(nome_img).suffix
+                dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
+                dest.write_bytes(z.read(nome_img))
+                img_path = dest
+                print(f"  {prefixo.capitalize()} extraído do ZIP: {dest.name}")
+            else:
                 print(f"  [AVISO] ZIP sem imagens: {zip_path.name}")
-                return None
-            # Prefere o arquivo maior (maior qualidade)
-            imagens.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
-            nome_img = imagens[0]
-            ext = Path(nome_img).suffix
-            dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
-            dest.write_bytes(z.read(nome_img))
-            print(f"  {prefixo.capitalize()} extraído do ZIP: {dest.name}")
-            return dest
+
+            # Tenta extrair legenda de TXT
+            if textos:
+                try:
+                    txt = z.read(textos[0]).decode("utf-8", errors="ignore").strip()
+                    if len(txt) > 5:
+                        caption_text = txt
+                        print(f"  Legenda TXT encontrada no ZIP ({len(txt)} chars)")
+                except Exception as e:
+                    print(f"  [AVISO] Erro ao ler TXT do ZIP: {e}")
+
+            # Tenta extrair legenda de PDF (usa pdfplumber se disponível)
+            if not caption_text and pdfs:
+                try:
+                    import io
+                    import pdfplumber
+                    pdf_bytes = z.read(pdfs[0])
+                    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                        texto_pdf = "\n".join(
+                            pg.extract_text() or "" for pg in pdf.pages
+                        ).strip()
+                    if len(texto_pdf) > 5:
+                        caption_text = texto_pdf
+                        print(f"  Legenda PDF encontrada no ZIP ({len(texto_pdf)} chars)")
+                except ImportError:
+                    print(f"  [AVISO] pdfplumber não instalado — legenda PDF ignorada")
+                except Exception as e:
+                    print(f"  [AVISO] Erro ao ler PDF do ZIP: {e}")
+
     except Exception as e:
         print(f"  [AVISO] Erro ao extrair ZIP {zip_path.name}: {e}")
-        return None
+    return img_path, caption_text
 
 
 # ─── Scraping do Sismaker ─────────────────────────────────────────────────────
@@ -333,7 +369,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
         data_iso   = hoje_dt.strftime("%Y-%m-%d")    # "2026-04-03"
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    resultado = {"feed": None, "story": None, "caption": CAPTION_PADRAO}
+    resultado = {"feeds": [], "stories": [], "caption": CAPTION_PADRAO}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -418,8 +454,10 @@ def buscar_posts(data_alvo: str = "") -> dict:
             qtd = secoes.count()
             print(f"  {qtd} botão(ões) 'Baixar' encontrado(s).")
 
-            def baixar_arquivo(idx: int, label: str) -> Path | None:
-                """Clica em Baixar, salva e extrai ZIP se necessário."""
+            def baixar_arquivo(idx: int, label: str) -> tuple:
+                """Clica em Baixar, salva e extrai ZIP se necessário.
+                Retorna: (Path|None, str|None)
+                """
                 try:
                     with page.expect_download(timeout=25000) as dl_info:
                         secoes.nth(idx).click()
@@ -428,16 +466,20 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     dl.save_as(str(dest_raw))
                     if dest_raw.suffix.lower() == ".zip":
                         return extrair_imagem_do_zip(dest_raw, label, data_iso)
-                    return dest_raw
+                    return dest_raw, None
                 except Exception as e:
                     print(f"  [AVISO] Download {label}: {e}")
-                    return None
+                    return None, None
 
             arquivos_baixados = []
-            for i in range(min(qtd, 2)):
-                arq = baixar_arquivo(i, str(i))
+            for i in range(qtd):  # baixa TODOS os botões disponíveis
+                arq, cap = baixar_arquivo(i, str(i))
                 if arq:
                     arquivos_baixados.append(arq)
+                # Usa a primeira legenda encontrada nos ZIPs
+                if cap and resultado["caption"] == CAPTION_PADRAO:
+                    resultado["caption"] = cap
+                    print(f"  Legenda do ZIP aplicada.")
                 page.wait_for_timeout(800)
 
             # ── 6. Classificar feed vs story pelo aspect ratio ─────────────
@@ -449,10 +491,10 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     ratio = img.width / img.height
                     img.close()
                     if ratio < 0.7:
-                        resultado["story"] = arq
+                        resultado["stories"].append(arq)
                         print(f"  → Story identificado: {arq.name} ({ratio:.2f})")
                     else:
-                        resultado["feed"] = arq
+                        resultado["feeds"].append(arq)
                         print(f"  → Feed identificado: {arq.name} ({ratio:.2f})")
                 except Exception as e:
                     print(f"  [AVISO] Não foi possível classificar {arq.name}: {e}")
@@ -500,29 +542,36 @@ def main():
     print(f"\n[1/3] Buscando posts de {label} no Sismaker...")
     posts = buscar_posts(data_busca)
 
-    feed_path  = posts["feed"]
-    story_path = posts["story"]
-    caption    = posts["caption"]
+    feeds   = posts["feeds"]    # lista de Paths
+    stories = posts["stories"]  # lista de Paths
+    caption = posts["caption"]
 
-    if not feed_path and not story_path:
+    if not feeds and not stories:
         print(f"\n  Nenhum arquivo baixado para {label}. Encerrando.")
         return
 
-    print(f"\n  Feed:  {feed_path.name if feed_path else 'não encontrado'}")
-    print(f"  Story: {story_path.name if story_path else 'não encontrado'}")
+    print(f"\n  Feeds encontrados:  {len(feeds)}")
+    print(f"  Stories encontrados: {len(stories)}")
     print(f"  Legenda: {caption[:80]}...")
 
     # 3. Preparar imagens e fazer upload para URL pública
     print("\n[2/3] Preparando e fazendo upload das imagens...")
-    feed_url  = upload_imgbb(preparar_imagem(feed_path,  "feed"),  imgbb_key) if feed_path  else None
-    story_url = upload_imgbb(preparar_imagem(story_path, "story"), imgbb_key) if story_path else None
+    feed_urls  = []
+    story_urls = []
 
-    if feed_url:
-        print(f"  Feed URL:  {feed_url}")
-    if story_url:
-        print(f"  Story URL: {story_url}")
+    for i, fp in enumerate(feeds):
+        url = upload_imgbb(preparar_imagem(fp, f"feed_{i}"), imgbb_key)
+        if url:
+            feed_urls.append(url)
+            print(f"  Feed {i+1} URL: {url}")
 
-    if not feed_url and not story_url:
+    for i, sp in enumerate(stories):
+        url = upload_imgbb(preparar_imagem(sp, f"story_{i}"), imgbb_key)
+        if url:
+            story_urls.append(url)
+            print(f"  Story {i+1} URL: {url}")
+
+    if not feed_urls and not story_urls:
         print("  Falha no upload de todas as imagens. Encerrando.")
         return
 
@@ -543,22 +592,24 @@ def main():
             continue
 
         print(f"\n  [{loja}]")
-        ok_feed  = False
-        ok_story = False
+        ok_feeds   = []
+        ok_stories = []
 
-        if feed_url:
-            ok_feed = postar_instagram(ig_user_id, token, feed_url, caption, is_story=False)
+        for feed_url in feed_urls:
+            ok = postar_instagram(ig_user_id, token, feed_url, caption, is_story=False)
+            ok_feeds.append(ok)
             time.sleep(3)
 
-        if story_url:
-            ok_story = postar_instagram(ig_user_id, token, story_url, caption, is_story=True)
+        for story_url in story_urls:
+            ok = postar_instagram(ig_user_id, token, story_url, caption, is_story=True)
+            ok_stories.append(ok)
             time.sleep(3)
 
         partes = []
-        if feed_url:
-            partes.append(f"Feed={'OK' if ok_feed else 'ERRO'}")
-        if story_url:
-            partes.append(f"Story={'OK' if ok_story else 'ERRO'}")
+        if feed_urls:
+            partes.append(f"Feeds={sum(ok_feeds)}/{len(ok_feeds)} OK")
+        if story_urls:
+            partes.append(f"Stories={sum(ok_stories)}/{len(ok_stories)} OK")
         resultados[loja] = " | ".join(partes)
 
     # Resumo final
