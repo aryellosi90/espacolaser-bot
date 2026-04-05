@@ -197,25 +197,45 @@ def preparar_imagem(src: Path, prefixo: str) -> Path:
 
 def upload_imgbb(image_path: Path, api_key: str) -> str | None:
     """
-    Faz upload da imagem no imgbb e retorna URL pública.
-    A imagem expira em 10 minutos (suficiente para o Instagram processá-la).
+    Faz upload da imagem em host público para o Instagram conseguir baixar.
+    Tenta catbox.moe primeiro (sem hotlink protection), depois imgbb como fallback.
     """
-    with open(image_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
+    # ── Tentativa 1: catbox.moe (sem API key, sem hotlink protection) ─────────
+    try:
+        with open(image_path, "rb") as f:
+            r = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (image_path.name, f, "image/jpeg")},
+                timeout=30,
+            )
+        if r.status_code == 200 and r.text.strip().startswith("https://"):
+            url = r.text.strip()
+            print(f"  Upload OK (catbox.moe): {url}")
+            return url
+        print(f"  [AVISO] catbox.moe retornou: {r.text[:100]}")
+    except Exception as e:
+        print(f"  [AVISO] catbox.moe falhou: {e}")
 
-    r = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={"key": api_key, "image": img_b64, "expiration": 600},
-        timeout=30,
-    )
-    data = r.json()
-    if data.get("success"):
-        url_retornada = data["data"]["url"]
-        print(f"  [DEBUG imgbb] url={repr(url_retornada)}")
-        print(f"  [DEBUG imgbb] display_url={repr(data['data'].get('display_url', 'N/A'))}")
-        print(f"  [DEBUG imgbb] image.url={repr(data['data'].get('image', {}).get('url', 'N/A'))}")
-        return url_retornada
-    print(f"  [ERRO imgbb] {data}")
+    # ── Tentativa 2: imgbb (com API key) ──────────────────────────────────────
+    if api_key:
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+            r = requests.post(
+                "https://api.imgbb.com/1/upload",
+                data={"key": api_key, "image": img_b64, "expiration": 600},
+                timeout=30,
+            )
+            data = r.json()
+            if data.get("success"):
+                url = data["data"]["url"]
+                print(f"  Upload OK (imgbb): {url}")
+                return url
+            print(f"  [ERRO imgbb] {data}")
+        except Exception as e:
+            print(f"  [AVISO] imgbb falhou: {e}")
+
     return None
 
 
@@ -245,7 +265,6 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
             time.sleep(espera)
 
         # Passo 1 — criar container
-        print(f"    [DEBUG] Postando {tipo} | image_url={repr(image_url)[:120]}")
         r1 = requests.post(
             f"{base}/{ig_user_id}/media",
             params=api_params,
