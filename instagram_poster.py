@@ -210,7 +210,11 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
     )
     data = r.json()
     if data.get("success"):
-        return data["data"]["url"]
+        url_retornada = data["data"]["url"]
+        print(f"  [DEBUG imgbb] url={repr(url_retornada)}")
+        print(f"  [DEBUG imgbb] display_url={repr(data['data'].get('display_url', 'N/A'))}")
+        print(f"  [DEBUG imgbb] image.url={repr(data['data'].get('image', {}).get('url', 'N/A'))}")
+        return url_retornada
     print(f"  [ERRO imgbb] {data}")
     return None
 
@@ -241,6 +245,7 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
             time.sleep(espera)
 
         # Passo 1 — criar container
+        print(f"    [DEBUG] Postando {tipo} | image_url={repr(image_url)[:120]}")
         r1 = requests.post(
             f"{base}/{ig_user_id}/media",
             params=api_params,
