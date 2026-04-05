@@ -17,6 +17,7 @@ Contas gerenciadas:
 """
 
 import os
+import re
 import json
 import time
 import base64
@@ -225,11 +226,13 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
     base = "https://graph.facebook.com/v19.0"
     tipo = "Story" if is_story else "Feed"
 
-    payload = {"image_url": image_url}
+    # image_url deve ir nos params (query string), não no body — exigido pela API do Instagram
+    api_params = {"access_token": token, "image_url": image_url}
     if is_story:
-        payload["media_type"] = "STORIES"
-    else:
-        payload["caption"] = caption
+        api_params["media_type"] = "STORIES"
+
+    # caption vai no body (pode ser longa, com emojis e hashtags)
+    data_body = {} if is_story else {"caption": caption}
 
     for tentativa in range(1, tentativas + 1):
         if tentativa > 1:
@@ -240,8 +243,8 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
         # Passo 1 — criar container
         r1 = requests.post(
             f"{base}/{ig_user_id}/media",
-            params={"access_token": token},
-            data=payload,
+            params=api_params,
+            data=data_body if data_body else None,
             timeout=30,
         )
         d1 = r1.json()
@@ -615,8 +618,11 @@ def main():
         print(f"  {loja:35s} → {status}")
     print("=" * 60)
 
-    # Verifica se houve pelo menos 1 sucesso real
-    houve_sucesso = any("OK" in str(s) for s in resultados.values())
+    # Verifica se houve pelo menos 1 sucesso real (ex: "2/3 OK" conta; "0/1 OK" NÃO conta)
+    houve_sucesso = any(
+        bool(re.search(r'[1-9]\d*/\d+\s*OK', str(s)))
+        for s in resultados.values()
+    )
 
     if houve_sucesso and not DATA_ALVO:
         # Salva estado para evitar reexecução às 18h
