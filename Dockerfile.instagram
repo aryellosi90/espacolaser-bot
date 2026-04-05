@@ -18,12 +18,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cron tzd
     ln -sf /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime && \
     echo "America/Sao_Paulo" > /etc/timezone
 
-# Crontab: 10h e 18h (horário de Brasília)
-# O script verifica sozinho se já postou hoje — se sim, a execução das 18h é ignorada
-RUN echo "0 10 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>&1" > /etc/cron.d/instagram && \
-    echo "0 18 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>&1" >> /etc/cron.d/instagram && \
-    chmod 0644 /etc/cron.d/instagram && \
-    crontab /etc/cron.d/instagram
+# Crontab: 10h e 18h (horário de Brasília) — TZ explícito para garantir horário correto
+RUN printf 'TZ=America/Sao_Paulo\n0 10 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n0 18 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
 
 # Variáveis de ambiente esperadas no Railway:
 # SISMAKER_LOGIN   — e-mail de login no Sismaker
@@ -35,5 +31,5 @@ RUN echo "0 10 * * * cd /app && python instagram_poster.py >> /app/poster.log 2>
 # ZAPI_TOKEN       — Token da instância Z-API
 # ZAPI_PHONE       — Número WhatsApp destino (ex: 5511964115060)
 
-# Script de inicialização: sobe o cron e mantém container vivo
-CMD touch /app/poster.log && cron -f
+# Script de inicialização: salva env vars do Railway, cria log e sobe cron em foreground
+CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron -f'
