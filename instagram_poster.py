@@ -431,12 +431,34 @@ def buscar_posts(data_alvo: str = "") -> dict:
             page.wait_for_load_state("networkidle", timeout=15000)
             print(f"  Login realizado.")
 
-            # ── 2. Página de cards com datas ──────────────────────────────
+            # ── 2. Página de cards (mês → data) ───────────────────────────
             page.goto(SISMAKER_URL, wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(2000)
             page.screenshot(path="debug_sismaker_cards.png")
 
-            # Procura o card da data (aceita "02/04" ou "02/04/2026")
+            # ── 2.1 Clica no card do mês (nível intermediário) ────────────
+            MESES_PT = {
+                1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO",  4: "ABRIL",
+                5: "MAIO",    6: "JUNHO",     7: "JULHO",  8: "AGOSTO",
+                9: "SETEMBRO",10: "OUTUBRO",  11: "NOVEMBRO", 12: "DEZEMBRO"
+            }
+            if data_alvo:
+                mes_num = int(data_alvo.split("/")[1])
+            else:
+                mes_num = hoje_dt.month
+            nome_mes = MESES_PT[mes_num]
+
+            mes_loc = page.get_by_text(nome_mes, exact=True)
+            if mes_loc.count() > 0:
+                print(f"  Card do mês encontrado: '{nome_mes}'")
+                mes_loc.first.click()
+                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_timeout(1500)
+                page.screenshot(path="debug_sismaker_mes.png")
+            else:
+                print(f"  Card do mês '{nome_mes}' não encontrado — buscando data diretamente")
+
+            # ── 2.2 Procura o card da data ────────────────────────────────
             card = None
             for texto in [data_longa, data_curta]:
                 loc = page.get_by_text(texto, exact=True)
