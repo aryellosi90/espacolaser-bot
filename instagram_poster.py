@@ -448,7 +448,11 @@ def buscar_posts(data_alvo: str = "") -> dict:
                 mes_num = hoje_dt.month
             nome_mes = MESES_PT[mes_num]
 
-            mes_loc = page.get_by_text(nome_mes, exact=True)
+            # Tenta encontrar o card do mês com match parcial (o card tem ícone + texto)
+            mes_loc = page.get_by_text(nome_mes, exact=False)
+            if mes_loc.count() == 0:
+                # Fallback: procura qualquer elemento clicável contendo o nome do mês
+                mes_loc = page.locator(f"text={nome_mes}")
             if mes_loc.count() > 0:
                 print(f"  Card do mês encontrado: '{nome_mes}'")
                 mes_loc.first.click()
