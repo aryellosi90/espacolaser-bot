@@ -32,4 +32,6 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10 * * * . /etc/container_env; cd /app && py
 # ZAPI_PHONE       — Número WhatsApp destino (ex: 5511964115060)
 
 # Script de inicialização: salva env vars do Railway, cria log e sobe cron em foreground
-CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
+# MODO TESTE — reverter após confirmar que funcionou:
+# CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
+CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && python instagram_poster.py 2>&1 | tee -a /app/poster.log; tail -f /app/poster.log'
