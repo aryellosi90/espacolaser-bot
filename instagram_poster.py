@@ -122,11 +122,40 @@ def salvar_tokens(data: dict):
 
 def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
     """Verifica validade do token e tenta renovar se necessário."""
-    token = config["accounts"][loja].get("token", "")
+    conta = config["accounts"][loja]
+    token = conta.get("token", "")
     if not token:
         print(f"  [{loja}] Token não configurado. Execute token_helper.py.")
         return None
 
+    auth_type = conta.get("auth_type", "facebook_login")
+
+    # ── Instagram Login (nova API) ──────────────────────────────────────────
+    if auth_type == "instagram_login":
+        r = requests.get(
+            "https://graph.instagram.com/v19.0/me",
+            params={"access_token": token, "fields": "id,username"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return token
+        print(f"  [{loja}] Token Instagram inválido, tentando renovar...")
+        r2 = requests.get(
+            "https://graph.instagram.com/refresh_access_token",
+            params={"grant_type": "ig_refresh_token", "access_token": token},
+            timeout=10,
+        )
+        data = r2.json()
+        if "access_token" in data:
+            novo = data["access_token"]
+            config["accounts"][loja]["token"] = novo
+            salvar_tokens(config)
+            print(f"  [{loja}] Token Instagram renovado.")
+            return novo
+        print(f"  [{loja}] Não foi possível renovar token Instagram: {data.get('error', data)}")
+        return None
+
+    # ── Facebook Login (API clássica) ───────────────────────────────────────
     r = requests.get(
         "https://graph.facebook.com/v19.0/me",
         params={"access_token": token},
@@ -242,21 +271,34 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
 # ─── Instagram Graph API ──────────────────────────────────────────────────────
 
 def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
-                     is_story: bool = False, tentativas: int = 3) -> bool:
+                     is_story: bool = False, is_video: bool = False,
+                     tentativas: int = 3, auth_type: str = "facebook_login") -> bool:
     """
-    Publica feed ou story no Instagram via Graph API.
+    Publica feed (imagem ou vídeo/Reels) ou story no Instagram via Graph API.
+    Suporta Facebook Login (graph.facebook.com) e Instagram Login (graph.instagram.com).
     Faz até `tentativas` retentativas em erros transitórios.
     """
-    base = "https://graph.facebook.com/v19.0"
-    tipo = "Story" if is_story else "Feed"
-
-    # image_url deve ir nos params (query string), não no body — exigido pela API do Instagram
-    api_params = {"access_token": token, "image_url": image_url}
+    if auth_type == "instagram_login":
+        base = "https://graph.instagram.com/v19.0"
+    else:
+        base = "https://graph.facebook.com/v19.0"
     if is_story:
-        api_params["media_type"] = "STORIES"
+        tipo = "Story"
+    elif is_video:
+        tipo = "Reels"
+    else:
+        tipo = "Feed"
 
-    # caption vai no body (pode ser longa, com emojis e hashtags)
-    data_body = {} if is_story else {"caption": caption}
+    # Monta parâmetros conforme o tipo de mídia
+    if is_video:
+        api_params = {"access_token": token, "video_url": image_url, "media_type": "REELS"}
+        data_body  = {"caption": caption}
+    elif is_story:
+        api_params = {"access_token": token, "image_url": image_url, "media_type": "STORIES"}
+        data_body  = {}
+    else:
+        api_params = {"access_token": token, "image_url": image_url}
+        data_body  = {"caption": caption}
 
     for tentativa in range(1, tentativas + 1):
         if tentativa > 1:
@@ -281,8 +323,9 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
             return False
 
         creation_id = d1["id"]
-        print(f"    Container {tipo} criado: {creation_id}. Aguardando...")
-        time.sleep(5)
+        espera_proc = 30 if is_video else 5
+        print(f"    Container {tipo} criado: {creation_id}. Aguardando {espera_proc}s...")
+        time.sleep(espera_proc)
 
         # Passo 2 — publicar
         r2 = requests.post(
@@ -306,16 +349,18 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
 # ─── Helpers de arquivo ──────────────────────────────────────────────────────
 
 def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
-    """Extrai imagem e tenta extrair legenda (TXT/PDF) de um ZIP.
-    Retorna: (Path|None, str|None) — (caminho_imagem, texto_legenda)
+    """Extrai imagem ou vídeo e tenta extrair legenda (TXT/PDF) de um ZIP.
+    Retorna: (Path|None, str|None) — (caminho_arquivo, texto_legenda)
     """
     extensoes_imagem = {".jpg", ".jpeg", ".png"}
+    extensoes_video  = {".mp4", ".mov", ".avi", ".mkv"}
     img_path = None
     caption_text = None
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
             nomes = z.namelist()
             imagens = [n for n in nomes if Path(n).suffix.lower() in extensoes_imagem]
+            videos  = [n for n in nomes if Path(n).suffix.lower() in extensoes_video]
             textos  = [n for n in nomes if Path(n).suffix.lower() == ".txt"]
             pdfs    = [n for n in nomes if Path(n).suffix.lower() == ".pdf"]
 
@@ -328,8 +373,17 @@ def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
                 dest.write_bytes(z.read(nome_img))
                 img_path = dest
                 print(f"  {prefixo.capitalize()} extraído do ZIP: {dest.name}")
+            elif videos:
+                # Vídeo como fallback se não tiver imagem
+                videos.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
+                nome_vid = videos[0]
+                ext = Path(nome_vid).suffix
+                dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
+                dest.write_bytes(z.read(nome_vid))
+                img_path = dest
+                print(f"  Vídeo extraído do ZIP: {dest.name}")
             else:
-                print(f"  [AVISO] ZIP sem imagens: {zip_path.name}")
+                print(f"  [AVISO] ZIP sem imagens ou vídeos: {zip_path.name}")
 
             # Tenta extrair legenda de TXT
             if textos:
@@ -534,17 +588,23 @@ def buscar_posts(data_alvo: str = "") -> dict:
 
             # ── 6. Classificar feed vs story pelo aspect ratio ─────────────
             # Story: 9:16 → ratio ≈ 0.56  |  Feed: 4:5 → ratio = 0.80+
+            # Vídeos (.mp4 etc.) → sempre feed (Reels)
             from PIL import Image as _PIL
+            extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
             for arq, cap in arquivos_baixados:
                 try:
+                    if arq.suffix.lower() in extensoes_video:
+                        resultado["feeds"].append({"path": arq, "caption": cap, "is_video": True})
+                        print(f"  → Feed (vídeo): {arq.name} | legenda: {cap[:40]}...")
+                        continue
                     img = _PIL.open(arq)
                     ratio = img.width / img.height
                     img.close()
                     if ratio < 0.7:
-                        resultado["stories"].append({"path": arq, "caption": cap})
+                        resultado["stories"].append({"path": arq, "caption": cap, "is_video": False})
                         print(f"  → Story: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                     else:
-                        resultado["feeds"].append({"path": arq, "caption": cap})
+                        resultado["feeds"].append({"path": arq, "caption": cap, "is_video": False})
                         print(f"  → Feed:  {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                 except Exception as e:
                     print(f"  [AVISO] Não foi possível classificar {arq.name}: {e}")
@@ -609,10 +669,16 @@ def main():
     story_urls = []
 
     for i, item in enumerate(feeds):
-        url = upload_imgbb(preparar_imagem(item["path"], f"feed_{i}"), imgbb_key)
+        is_video = item.get("is_video", False)
+        if is_video:
+            # Vídeo: upload direto para catbox (sem preparar_imagem)
+            url = upload_imgbb(item["path"], imgbb_key)
+        else:
+            url = upload_imgbb(preparar_imagem(item["path"], f"feed_{i}"), imgbb_key)
         if url:
-            feed_urls.append((url, item["caption"]))
-            print(f"  Feed {i+1} URL ok | legenda: {item['caption'][:50]}...")
+            feed_urls.append((url, item["caption"], is_video))
+            tipo_str = "Vídeo" if is_video else "Feed"
+            print(f"  {tipo_str} {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
     for i, item in enumerate(stories):
         url = upload_imgbb(preparar_imagem(item["path"], f"story_{i}"), imgbb_key)
@@ -629,6 +695,12 @@ def main():
     resultados = {}
 
     for loja, conta in config["accounts"].items():
+        if conta.get("disabled"):
+            motivo = conta.get("disabled_reason", "desabilitado manualmente")
+            print(f"\n  [{loja}] DESABILITADO — {motivo[:80]}")
+            resultados[loja] = "DESABILITADO"
+            continue
+
         ig_user_id = conta.get("ig_user_id", "")
         if not ig_user_id:
             print(f"\n  [{loja}] Sem ig_user_id — pulando.")
@@ -640,17 +712,18 @@ def main():
             resultados[loja] = "FALHA (token inválido)"
             continue
 
-        print(f"\n  [{loja}]")
+        auth_type = conta.get("auth_type", "facebook_login")
+        print(f"\n  [{loja}] (auth: {auth_type})")
         ok_feeds   = []
         ok_stories = []
 
-        for feed_url, cap in feed_urls:
-            ok = postar_instagram(ig_user_id, token, feed_url, cap, is_story=False)
+        for feed_url, cap, is_video in feed_urls:
+            ok = postar_instagram(ig_user_id, token, feed_url, cap, is_story=False, is_video=is_video, auth_type=auth_type)
             ok_feeds.append(ok)
             time.sleep(3)
 
         for story_url, cap in story_urls:
-            ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True)
+            ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True, auth_type=auth_type)
             ok_stories.append(ok)
             time.sleep(3)
 
