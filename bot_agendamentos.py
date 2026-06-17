@@ -40,7 +40,7 @@ NOMES_LOJAS = {
 }
 
 LOGIN  = os.environ.get("EVUP_LOGIN", "36217165805")
-SENHA  = os.environ.get("EVUP_SENHA", "Alosi9090@@@***")
+SENHA  = os.environ.get("EVUP_SENHA", "Alosi9090@@@****")
 
 # Webhook para agendamentos (crie no N8N ou use o mesmo com payload diferente)
 WEBHOOK_URL = os.environ.get(
@@ -88,6 +88,72 @@ def clicar(page, seletores, nome, timeout=10000):
     print(f"  !! Não conseguiu clicar em '{nome}'")
     return False
 
+
+# ================================================================
+# HELPERS DE IFRAME — NOVO LAYOUT ELOS
+# ================================================================
+
+def get_page(page_or_frame):
+    """Retorna o objeto Page a partir de um Page ou Frame."""
+    return getattr(page_or_frame, "page", page_or_frame)
+
+
+def encontrar_frame_relatorio(page):
+    """Encontra o iframe com a lista de relatórios (ReportMain/Index)."""
+    page.wait_for_timeout(3000)
+    frames = page.frames
+    print(f"Total de frames: {len(frames)}")
+    for i, f in enumerate(frames):
+        print(f"  Frame {i}: {f.url[:80]}")
+
+    for f in frames:
+        if "ReportMain" in f.url or "reportmain" in f.url.lower():
+            print(f"Frame ReportMain encontrado: {f.url[:80]}")
+            return f
+
+    for f in frames:
+        if "evup.com.br" in f.url and f.url != frames[0].url and "about:blank" not in f.url:
+            print(f"Frame evup secundário encontrado: {f.url[:80]}")
+            return f
+
+    print("Nenhum frame do relatório encontrado, usando página principal.")
+    return page
+
+
+def aguardar_frame_agendamentos(page):
+    """Aguarda e retorna o iframe com a página de Agendamentos (com botão BUSCA)."""
+    url_frame0 = page.frames[0].url
+    frame_agen = None
+
+    for tentativa in range(6):
+        frames = page.frames
+        print(f"Aguardando frame de agendamentos... tentativa {tentativa+1}/6, {len(frames)} frames")
+        for i, f in enumerate(frames):
+            print(f"  Frame {i}: {f.url[:80]}")
+
+        for f in frames:
+            try:
+                if f.url == url_frame0 or "about:blank" in f.url or "ReportMain/Index" in f.url:
+                    continue
+                if "evup.com.br" in f.url:
+                    count = f.locator("button").filter(has_text="BUSCA").count()
+                    print(f"  Frame {f.url[:60]}: {count} botão(ões) BUSCA")
+                    if count > 0:
+                        print(f"Frame de agendamentos encontrado: {f.url[:80]}")
+                        frame_agen = f
+                        break
+            except Exception as ex:
+                print(f"  Erro ao checar frame: {ex}")
+
+        if frame_agen:
+            break
+        page.wait_for_timeout(3000)
+
+    if not frame_agen:
+        print("Frame de agendamentos não encontrado. Usando página principal.")
+        return page
+
+    return frame_agen
 
 
 # ================================================================
@@ -241,9 +307,9 @@ def configurar_nivel_detalhamento(page):
 
         page.wait_for_timeout(400)
 
-    page.keyboard.press("Escape")
+    get_page(page).keyboard.press("Escape")
     page.wait_for_timeout(400)
-    page.screenshot(path="debug_detalhe_ok.png")
+    get_page(page).screenshot(path="debug_detalhe_ok.png")
     print("  Nível de Detalhamento configurado. Screenshot: debug_detalhe_ok.png")
 
 
@@ -271,37 +337,68 @@ def login_evup(page):
 # ================================================================
 
 def navegar_para_agendamentos(page):
+    """
+    Navega até o relatório de Agendamentos no novo layout Elos (com iframes).
+    Retorna o Frame que contém o relatório (com botão BUSCA).
+    """
     print("\n[NAV] Clicando em Relatórios...")
     page.screenshot(path="debug_01_pos_login.png")
 
-    ok = clicar(page, [
-        page.get_by_text("Relatórios", exact=True),
-        page.locator("a:has-text('Relatórios')").first,
-        page.locator("span:has-text('Relatórios')").first,
-        page.locator("li:has-text('Relatórios') > a").first,
-        page.locator("text=Relatórios").first,
-    ], "Relatórios")
-
-    if not ok:
-        raise Exception("Não encontrou o menu 'Relatórios'")
-
-    page.wait_for_timeout(3000)
-    page.screenshot(path="debug_02_relatorios.png")
-
-    print("[NAV] Clicando em Agendamentos...")
-    ok = clicar(page, [
-        page.get_by_text("Agendamentos", exact=True),
-        page.locator("a:has-text('Agendamentos')").first,
-        page.locator("li:has-text('Agendamentos') > a").first,
-        page.locator("text=Agendamentos").first,
-    ], "Agendamentos")
-
-    if not ok:
-        raise Exception("Não encontrou o submenu 'Agendamentos'")
+    # Clica em Relatórios na página principal com force para elementos ocultos
+    try:
+        loc = page.get_by_text("Relatórios", exact=True)
+        loc.scroll_into_view_if_needed(timeout=5000)
+        loc.click(force=True, timeout=10000)
+        print("  OK: Relatórios")
+    except Exception as e:
+        print(f"  Falha Relatórios force: {e}")
+        # Fallback via JS na página principal
+        page.evaluate("""
+            () => {
+                const all = Array.from(document.querySelectorAll('a, span, li'));
+                const el = all.find(e => e.textContent.trim() === 'Relatórios');
+                if (el) el.click();
+            }
+        """)
 
     page.wait_for_timeout(4000)
+    page.screenshot(path="debug_02_relatorios.png")
+
+    # Encontra o Frame 2 (ReportMain/Index) com a lista de relatórios
+    frame_lista = encontrar_frame_relatorio(page)
+
+    print("[NAV] Clicando em Agendamentos no frame da lista...")
+    # Tenta clicar com force (elemento pode estar oculto no novo layout)
+    try:
+        locator = frame_lista.get_by_text("Agendamentos", exact=True).first
+        locator.scroll_into_view_if_needed(timeout=5000)
+        locator.click(timeout=10000, force=True)
+        print("  OK: Agendamentos via force.")
+    except Exception as e:
+        print(f"  Falhou force click Agendamentos: {e}")
+        # Fallback JS dentro do frame
+        try:
+            frame_lista.evaluate("""
+                () => {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const agen = links.find(a => a.textContent.trim() === 'Agendamentos');
+                    if (agen) { agen.click(); return true; }
+                    const parcial = links.find(a => a.textContent.trim().includes('Agendamento'));
+                    if (parcial) { parcial.click(); return true; }
+                    return false;
+                }
+            """)
+            print("  OK: Agendamentos via JS.")
+        except Exception as e2:
+            raise Exception(f"Não encontrou 'Agendamentos': {e2}")
+
+    page.wait_for_timeout(6000)
+
+    # Aguarda o Frame 4 (relatório de Agendamentos com botão BUSCA)
+    frame_agen = aguardar_frame_agendamentos(page)
     page.screenshot(path="debug_03_agendamentos.png")
     print("[NAV] Na página de Agendamentos. Screenshot: debug_03_agendamentos.png")
+    return frame_agen
 
 
 # ================================================================
@@ -319,7 +416,7 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
     page.wait_for_timeout(600)
 
     # Screenshot antes para diagnóstico
-    page.screenshot(path="debug_04_antes_data.png")
+    get_page(page).screenshot(path="debug_04_antes_data.png")
 
     # Inspeciona os inputs visíveis para saber qual seletor usar
     info = page.evaluate("""
@@ -366,12 +463,12 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
     # Triple-click (click_count=3) → seleciona tudo → digita o range → Enter
     campo.click(click_count=3)
     page.wait_for_timeout(400)
-    page.keyboard.type(texto_range, delay=40)
+    get_page(page).keyboard.type(texto_range, delay=40)
     page.wait_for_timeout(300)
-    page.keyboard.press("Enter")
+    get_page(page).keyboard.press("Enter")
     page.wait_for_timeout(800)
 
-    page.screenshot(path="debug_04_datas.png")
+    get_page(page).screenshot(path="debug_04_datas.png")
     print(f"  Data configurada. Screenshot: debug_04_datas.png")
 
 
@@ -458,7 +555,7 @@ def buscar_e_aguardar(page):
     except Exception:
         pass
     page.wait_for_timeout(5000)
-    page.screenshot(path="debug_05_resultado.png")
+    get_page(page).screenshot(path="debug_05_resultado.png")
     print("[BUSCA] Resultado carregado. Screenshot: debug_05_resultado.png")
 
 
@@ -474,14 +571,14 @@ def baixar_excel(page) -> str:
     print("\n[EXCEL] Expandindo filtro para acessar botão Excel...")
     expandir_filtro(page)
 
-    page.screenshot(path="debug_06_antes_excel.png")
+    get_page(page).screenshot(path="debug_06_antes_excel.png")
 
     # Registra tempo antes do clique para encontrar o arquivo depois
     ts_antes = time.time()
 
     try:
         # Tenta interceptar o download diretamente
-        with page.expect_download(timeout=60000) as download_info:
+        with get_page(page).expect_download(timeout=60000) as download_info:
             clicar(page, [
                 page.get_by_role("button", name="EXCEL"),
                 page.get_by_role("button", name="Excel"),
@@ -993,32 +1090,32 @@ def main():
             # ── 1. Login ────────────────────────────────────────────
             login_evup(page)
 
-            # ── 2. Relatórios → Agendamentos ───────────────────────
-            navegar_para_agendamentos(page)
+            # ── 2. Relatórios → Agendamentos (retorna o iframe correto) ────
+            frame_agen = navegar_para_agendamentos(page)
 
             # ── 3. Expande o painel Filtro (começa colapsado) ───────
-            expandir_filtro(page)
+            expandir_filtro(frame_agen)
 
             # ── 4. Configura Data Programada ────────────────────────
-            configurar_datas(page, inicio_str, fim_str, hoje, data_fim)
+            configurar_datas(frame_agen, inicio_str, fim_str, hoje, data_fim)
 
             # ── 5. Configura Nível de Detalhamento ──────────────────
-            configurar_nivel_detalhamento(page)
+            configurar_nivel_detalhamento(frame_agen)
 
             # ── 6. Remove coluna anterior (× Estabelecimento) ───────
-            limpar_coluna_anterior(page)
+            limpar_coluna_anterior(frame_agen)
 
             # ── 7. Clica no Filtro (obrigatório após o ×) ────────────
-            clicar(page, [
-                page.locator(".card-header:has-text('Filtro')").first,
-                page.locator(".panel-heading:has-text('Filtro')").first,
-                page.locator("[class*='header']:has-text('Filtro')").first,
-                page.locator("*").filter(has_text="Filtro").nth(0),
+            clicar(frame_agen, [
+                frame_agen.locator(".card-header:has-text('Filtro')").first,
+                frame_agen.locator(".panel-heading:has-text('Filtro')").first,
+                frame_agen.locator("[class*='header']:has-text('Filtro')").first,
+                frame_agen.locator("*").filter(has_text="Filtro").nth(0),
             ], "Filtro (após ×)", timeout=5000)
-            page.wait_for_timeout(800)
+            frame_agen.wait_for_timeout(800)
 
             # ── 8. Download Excel ────────────────────────────────────
-            caminho_excel = baixar_excel(page)
+            caminho_excel = baixar_excel(frame_agen)
             browser.close()
 
         except Exception as e:
