@@ -591,16 +591,27 @@ def baixar_excel(page) -> str:
                 page.locator(".k-grid-toolbar button").last,
             ], "EXCEL")
 
-            # Modal de confirmação: "Atenção! A exportação será de todas as linhas..."
-            page.wait_for_timeout(1000)
-            clicar(page, [
-                page.get_by_role("button", name="CONFIRMAR"),
-                page.locator("button:has-text('CONFIRMAR')").first,
-                page.get_by_text("CONFIRMAR", exact=True),
-            ], "CONFIRMAR modal", timeout=5000)
+            # Modal de confirmação: aparece na página principal (fora do iframe)
+            page.wait_for_timeout(1500)
+            real_page = get_page(page)
+            # Tenta primeiro na página principal (onde modais costumam aparecer)
+            ok_confirmar = clicar(real_page, [
+                real_page.get_by_role("button", name="CONFIRMAR"),
+                real_page.locator("button:has-text('CONFIRMAR')").first,
+                real_page.get_by_text("CONFIRMAR", exact=True),
+                real_page.locator("button:has-text('OK')").first,
+                real_page.locator(".modal button").last,
+            ], "CONFIRMAR modal (página)", timeout=4000)
+            # Fallback: tenta dentro do frame
+            if not ok_confirmar:
+                clicar(page, [
+                    page.get_by_role("button", name="CONFIRMAR"),
+                    page.locator("button:has-text('CONFIRMAR')").first,
+                    page.get_by_text("CONFIRMAR", exact=True),
+                ], "CONFIRMAR modal (frame)", timeout=3000)
 
         download = download_info.value
-        nome_arquivo = download.suggested_filename or f"Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        nome_arquivo = f"Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         caminho = os.path.join(DOWNLOADS, nome_arquivo)
         download.save_as(caminho)
         print(f"[EXCEL] Download salvo: {caminho}")
@@ -1020,6 +1031,140 @@ def gerar_imagem_proximos_dias(df: pd.DataFrame, mapa: dict, hoje, data_ref: str
 
 
 # ================================================================
+# GERAÇÃO DE IMAGEM — CRIADOS HOJE
+# ================================================================
+
+def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str, hora_ref: str):
+    """
+    Gera uma imagem PNG do relatório de Agendamentos Criados Hoje.
+    Tabela: Loja → Consultor → Qtd.
+    Retorna (caminho_png, base64_string) ou (None, None) se falhar.
+    """
+    col_estab      = mapa.get("estabelecimento")
+    col_usuario    = mapa.get("usuario")
+    col_status     = mapa.get("status")
+    col_localidade = mapa.get("localidade")
+    col_criacao    = mapa.get("data_criacao")
+
+    if not col_estab:
+        return None, None
+
+    df2 = df.copy()
+    if col_status:
+        df2 = df2[~df2[col_status].str.upper().str.contains("CANCEL", na=False)]
+    if col_localidade:
+        df2 = df2[df2[col_localidade].str.upper().str.contains("AVALIA", na=False)]
+    if col_criacao:
+        df2["_dt_criacao"] = normalizar_data(df2[col_criacao])
+        df2 = df2[df2["_dt_criacao"] == hoje]
+
+    if df2.empty:
+        print("[IMG-HOJE] Nenhum dado para gerar imagem.")
+        return None, None
+
+    # Monta linhas: Loja (seção) → Consultor → Qtd
+    linhas = []  # (label, count, estilo)
+    total_geral = 0
+
+    for estab_orig, grp_estab in df2.groupby(col_estab, sort=True):
+        nome = NOMES_LOJAS.get(str(estab_orig).strip(), str(estab_orig).strip())
+        total_loja = len(grp_estab)
+        total_geral += total_loja
+        linhas.append((nome, total_loja, "loja"))
+
+        if col_usuario:
+            for usuario, grp_usr in grp_estab.groupby(col_usuario, sort=True):
+                linhas.append((str(usuario), len(grp_usr), "usuario"))
+
+    linhas.append(("Total Geral", total_geral, "total"))
+
+    # Dimensões
+    label_w  = 4.5
+    count_w  = 1.0
+    row_h    = 0.40
+    header_h = 0.50
+    pad      = 0.25
+
+    fig_w = pad + label_w + count_w + pad
+    fig_h = pad + header_h + row_h * len(linhas) + pad + 0.45
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(0, fig_w)
+    ax.set_ylim(0, fig_h)
+    ax.axis("off")
+    fig.patch.set_facecolor("white")
+
+    COR = {
+        "cabecalho":   ("#4472C4", "white"),
+        "loja":        ("#E2EFDA", "black"),
+        "usuario_par": ("white",   "black"),
+        "usuario_imp": ("#F5F5F5", "black"),
+        "total":       ("#D9D9D9", "black"),
+    }
+
+    def celula(x, y, w, h, texto, bg, fg, bold=False, alinha="center"):
+        ax.add_patch(plt.Rectangle(
+            (x, y), w, h,
+            facecolor=bg, edgecolor="#BBBBBB", linewidth=0.5, zorder=1
+        ))
+        tx = x + 0.12 if alinha == "left" else x + w / 2
+        ax.text(tx, y + h / 2, texto,
+                ha=alinha if alinha == "left" else "center",
+                va="center", fontsize=8.5, color=fg,
+                fontweight="bold" if bold else "normal",
+                clip_on=True, zorder=2)
+
+    # Cabeçalho
+    y_cab = fig_h - pad - header_h
+    celula(pad, y_cab, label_w, header_h,
+           "Loja / Consultor", COR["cabecalho"][0], COR["cabecalho"][1], True, "left")
+    celula(pad + label_w, y_cab, count_w, header_h,
+           "Qtd", COR["cabecalho"][0], COR["cabecalho"][1], True)
+
+    # Linhas
+    usr_idx = 0
+    for ri, (label, count, estilo) in enumerate(linhas):
+        y_row = fig_h - pad - header_h - (ri + 1) * row_h
+
+        if estilo == "loja":
+            bg, fg, bold = COR["loja"][0], COR["loja"][1], True
+            texto_label = label
+            usr_idx = 0
+        elif estilo == "total":
+            bg, fg, bold = COR["total"][0], COR["total"][1], True
+            texto_label = label
+        else:
+            chave = "usuario_par" if usr_idx % 2 == 0 else "usuario_imp"
+            bg, fg, bold = COR[chave][0], COR[chave][1], False
+            texto_label = f"  {label}"
+            usr_idx += 1
+
+        celula(pad, y_row, label_w, row_h, texto_label, bg, fg, bold, "left")
+        celula(pad + label_w, y_row, count_w, row_h, str(count), bg, fg, bold)
+
+    # Título
+    ax.text(fig_w / 2, fig_h - pad / 2,
+            f"Agendamentos Criados Hoje  —  {data_ref}  {hora_ref}",
+            ha="center", va="center", fontsize=10.5,
+            fontweight="bold", color="#333333")
+
+    caminho = os.path.join(DOWNLOADS, f"criados_hoje_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    print(f"[IMG-HOJE] Salvando em: {caminho}")
+    plt.savefig(caminho, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close()
+
+    if not os.path.exists(caminho):
+        print("[IMG-HOJE] ERRO: arquivo não foi criado.")
+        return None, None
+
+    with open(caminho, "rb") as f:
+        img_b64 = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+
+    print(f"[IMG-HOJE] Imagem gerada com sucesso: {caminho}")
+    return caminho, img_b64
+
+
+# ================================================================
 # ENVIO WEBHOOK
 # ================================================================
 
@@ -1136,10 +1281,19 @@ def main():
         print(f"\nERRO ao ler Excel: {e}")
         return
 
-    # ── 7a. Mensagem: Criados Hoje ──────────────────────────────
+    # ── 7a. Mensagem: Criados Hoje (imagem) ────────────────────
     print("\n--- GERANDO: Criados Hoje ---")
+    try:
+        caminho_img1, img_b64_1 = gerar_imagem_criados_hoje(df, mapa, hoje, data_ref, hora_ref)
+    except Exception as e:
+        print(f"  ERRO ao gerar imagem criados hoje: {e}")
+        caminho_img1, img_b64_1 = None, None
+
     msg1 = gerar_msg_criados_hoje(df, mapa, data_ref, hora_ref, hoje)
-    if msg1:
+    if caminho_img1:
+        print(f"  Imagem: {caminho_img1}")
+        enviar_webhook(msg1 or "", "criados_hoje", data_ref, hora_ref, img_b64_1)
+    elif msg1:
         print(msg1)
         enviar_webhook(msg1, "criados_hoje", data_ref, hora_ref)
     else:
