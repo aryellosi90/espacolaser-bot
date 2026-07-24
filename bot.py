@@ -10,7 +10,7 @@ import hashlib
 # CREDENCIAIS EVUP
 # ===============================
 LOGIN = os.environ.get("EVUP_LOGIN", "36217165805")
-SENHA = os.environ.get("EVUP_SENHA", "Alosi9090@@@****")
+SENHA = os.environ.get("EVUP_SENHA", "")
 
 # ===============================
 # WEBHOOK N8N
