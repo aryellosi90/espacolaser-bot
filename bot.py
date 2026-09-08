@@ -36,7 +36,12 @@ NOMES_LOJAS = {
 # ===============================
 # ARQUIVO DE ESTADO (evita duplicatas)
 # ===============================
-STATE_FILE = "state.json"
+# Em produção (Railway) aponte STATE_FILE pra um caminho dentro de um Volume
+# (ex: /data/state.json) — sem isso, o estado se perde a cada redeploy do
+# serviço (inclusive redeploys de OUTRO serviço que compartilha este mesmo
+# repositório) e o bot manda a mensagem de novo achando que os dados são
+# novos, mesmo sem nenhuma venda ter mudado de verdade.
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 
 
 def carregar_estado():
