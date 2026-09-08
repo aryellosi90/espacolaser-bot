@@ -2,6 +2,10 @@ FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 WORKDIR /app
 
+# Sem isso, o stdout do Python fica bufferizado quando não está preso a um
+# terminal (caso do container) — os logs só apareciam com atraso/incompletos.
+ENV PYTHONUNBUFFERED=1
+
 # Dependências Python
 COPY requirements.txt .
 RUN pip install -r requirements.txt
@@ -38,7 +42,10 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10 * * * . /etc/container_env; cd /app && py
 # ZAPI_CLIENT_TOKEN
 # ZAPI_PHONE         — Número WhatsApp destino (ex: 5511964115060)
 
-# Script de inicialização: salva env vars do Railway, cria log e sobe cron em foreground
-# MODO TESTE — reverter após confirmar que funcionou:
-# CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
-CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && python instagram_poster.py 2>&1 | tee -a /app/poster.log; tail -f /app/poster.log'
+# Script de inicialização: salva env vars do Railway, cria log e sobe cron em
+# foreground. NÃO roda o poster imediatamente ao subir o container — só via
+# cron (10h/18h) — porque cada redeploy sobe um container novo, e rodar na
+# hora significa tentar postar de verdade toda vez que o serviço reiniciar,
+# redeploy incluso (foi exatamente isso que causou uma postagem indesejada
+# em 08/09/2026, com uma variável de teste antiga ainda configurada).
+CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
