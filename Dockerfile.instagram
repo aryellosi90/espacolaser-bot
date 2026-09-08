@@ -19,14 +19,17 @@ RUN playwright install chromium
 COPY instagram_poster.py .
 COPY token_helper.py .
 
-# Agendamento: roda todo dia às 9h, 12h e 18h (horário de Brasília = UTC-3)
+# Agendamento: roda todo dia às 10h, 14h, 18h e 20h (horário de Brasília = UTC-3)
 # Instala cron
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cron tzdata && \
     ln -sf /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime && \
     echo "America/Sao_Paulo" > /etc/timezone
 
-# Crontab: 10h e 18h (horário de Brasília) — TZ explícito para garantir horário correto
-RUN printf 'TZ=America/Sao_Paulo\n0 10 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n0 18 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
+# Crontab: 10h, 14h, 18h e 20h (horário de Brasília) — TZ explícito para
+# garantir horário correto. ja_postou_hoje()/marcar_postado() já cuidam de
+# não postar de novo nas execuções seguintes do mesmo dia, então rodar mais
+# vezes só aumenta a chance de pegar a arte assim que o Sismaker publicar.
+RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
 
 # Variáveis de ambiente esperadas no Railway (Service → Variables):
 # SISMAKER_LOGIN     — e-mail de login no Sismaker (obrigatório)
@@ -44,8 +47,9 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10 * * * . /etc/container_env; cd /app && py
 
 # Script de inicialização: salva env vars do Railway, cria log e sobe cron em
 # foreground. NÃO roda o poster imediatamente ao subir o container — só via
-# cron (10h/18h) — porque cada redeploy sobe um container novo, e rodar na
-# hora significa tentar postar de verdade toda vez que o serviço reiniciar,
+# cron (10h/14h/18h/20h) — porque cada redeploy sobe um container novo, e
+# rodar na hora significa tentar postar de verdade toda vez que o serviço
+# reiniciar,
 # redeploy incluso (foi exatamente isso que causou uma postagem indesejada
 # em 08/09/2026, com uma variável de teste antiga ainda configurada).
 CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
