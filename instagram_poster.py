@@ -2,22 +2,23 @@
 Automação: Sismaker → Instagram Poster
 ========================================
 Fluxo:
-  1. Login no Sismaker (novo.sismaker.com)
-  2. Acessa a página de downloads (/download_infinity_pages/44767)
-  3. Verifica se há posts para hoje
-  4. Baixa as imagens encontradas
-  5. Faz upload para imgbb (URL pública temporária)
-  6. Posta no Instagram de cada unidade via Graph API
+1. Login no Sismaker (novo.sismaker.com)
+2. Acessa a página de downloads (/download_infinity_pages/44767)
+3. Verifica se há posts para hoje
+4. Baixa as imagens encontradas (suporta post único ou carrossel)
+5. Faz upload para host público (catbox.moe, fallback imgbb)
+6. Posta no Instagram de cada unidade via Graph API
 
 Contas gerenciadas:
-  - @espacolaser.uba
-  - @espacolaser.ibiuna
-  - @espacolaser.monlevade
-  - @espacolaser.patrociniomg
+- @espacolaser.uba
+- @espacolaser.ibiuna
+- @espacolaser.monlevade
+- @espacolaser.patrociniomg
 """
 
 import os
 import re
+import sys
 import json
 import time
 import base64
@@ -29,25 +30,38 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 import pytz
 
+# Evita crash em console Windows (cp1252) ao imprimir emoji/acentos — em
+# Linux/Docker (produção) já é utf-8 por padrão, então isso é só defensivo.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
+
 # ─── Z-API (WhatsApp) ────────────────────────────────────────────────────────
-ZAPI_INSTANCE      = os.environ.get("ZAPI_INSTANCE",      "3EB20541D8D291DF679CBE1FFBCB878E")
-ZAPI_TOKEN         = os.environ.get("ZAPI_TOKEN",         "C3ACF20485B471C0AF93AE1A")
-ZAPI_CLIENT_TOKEN  = os.environ.get("ZAPI_CLIENT_TOKEN",  "F36133724cab54a22b90414da356600faS")
-ZAPI_PHONE         = os.environ.get("ZAPI_PHONE",         "5511964115060")
+ZAPI_INSTANCE = os.environ.get("ZAPI_INSTANCE", "3EB20541D8D291DF679CBE1FFBCB878E")
+ZAPI_TOKEN = os.environ.get("ZAPI_TOKEN", "C3ACF20485B471C0AF93AE1A")
+ZAPI_CLIENT_TOKEN = os.environ.get("ZAPI_CLIENT_TOKEN", "F36133724cab54a22b90414da356600faS")
+ZAPI_PHONE = os.environ.get("ZAPI_PHONE", "5511964115060")
 
 # ─── Controle de estado (evita duplo disparo) ─────────────────────────────────
 STATE_FILE = "ig_poster_state.json"
 
 # ─── Configurações ────────────────────────────────────────────────────────────
 
-SISMAKER_URL   = "https://novo.sismaker.com/espacolaser/download_infinity_pages/44767"
+SISMAKER_URL = "https://novo.sismaker.com/espacolaser/download_infinity_pages/44767"
 SISMAKER_LOGIN = os.environ.get("SISMAKER_LOGIN", "franqueado.aryel.losi@espacolaser.com.br")
 SISMAKER_SENHA = os.environ.get("SISMAKER_SENHA", "Espaco@Losiana1")
-TOKENS_FILE    = os.environ.get("TOKENS_FILE", "tokens.json")
-IMGBB_API_KEY  = os.environ.get("IMGBB_API_KEY", "")
-TZ_SP          = pytz.timezone("America/Sao_Paulo")
-HEADLESS       = os.environ.get("HEADLESS", "true").lower() == "true"
-DOWNLOAD_DIR   = Path(tempfile.gettempdir()) / "sismaker_posts"
+TOKENS_FILE = os.environ.get("TOKENS_FILE", "tokens.json")
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")
+TZ_SP = pytz.timezone("America/Sao_Paulo")
+HEADLESS = os.environ.get("HEADLESS", "true").lower() == "true"
+DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "sismaker_posts"
+
+# Limite de itens por carrossel imposto pela Graph API do Instagram (o app
+# nativo aceita até 20, mas a API de publicação continua limitada a 10 —
+# confirmado testando as versões v19 a v23 em 08/09/2026).
+MAX_CAROUSEL_ITEMS = 10
 
 # Legenda padrão — personalize conforme necessário
 # Legenda padrão — será sobrescrita pelo texto encontrado no Sismaker
@@ -60,7 +74,6 @@ CAPTION_PADRAO = os.environ.get(
 # Para testar com data diferente: defina DATA_ALVO=02/04 (formato dd/mm)
 DATA_ALVO = os.environ.get("DATA_ALVO", "")
 
-
 # ─── Controle de Estado ──────────────────────────────────────────────────────
 
 def ja_postou_hoje() -> bool:
@@ -72,15 +85,13 @@ def ja_postou_hoje() -> bool:
         state = json.load(f)
     return state.get("data") == today and state.get("postado") is True
 
-
 def marcar_postado(resumo: dict):
     """Salva estado de postagem do dia com resumo das contas."""
     today = datetime.now(TZ_SP).strftime("%Y-%m-%d")
-    hora  = datetime.now(TZ_SP).strftime("%H:%M")
+    hora = datetime.now(TZ_SP).strftime("%H:%M")
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump({"data": today, "hora": hora, "postado": True, "resumo": resumo}, f,
-                  indent=2, ensure_ascii=False)
-
+                   indent=2, ensure_ascii=False)
 
 # ─── Notificação WhatsApp (Z-API) ─────────────────────────────────────────────
 
@@ -96,12 +107,11 @@ def enviar_whatsapp(mensagem: str):
             timeout=15,
         )
         if r.status_code == 200:
-            print("  WhatsApp enviado com sucesso!")
+            print(" WhatsApp enviado com sucesso!")
         else:
-            print(f"  [AVISO] WhatsApp status {r.status_code}: {r.text[:100]}")
+            print(f" [AVISO] WhatsApp status {r.status_code}: {r.text[:100]}")
     except Exception as e:
-        print(f"  [AVISO] Falha ao enviar WhatsApp: {e}")
-
+        print(f" [AVISO] Falha ao enviar WhatsApp: {e}")
 
 # ─── Gerenciamento de Tokens ──────────────────────────────────────────────────
 
@@ -114,18 +124,16 @@ def carregar_tokens() -> dict:
     with open(TOKENS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-
 def salvar_tokens(data: dict):
     with open(TOKENS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
 
 def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
     """Verifica validade do token e tenta renovar se necessário."""
     conta = config["accounts"][loja]
     token = conta.get("token", "")
     if not token:
-        print(f"  [{loja}] Token não configurado. Execute token_helper.py.")
+        print(f" [{loja}] Token não configurado. Execute token_helper.py.")
         return None
 
     auth_type = conta.get("auth_type", "facebook_login")
@@ -139,7 +147,7 @@ def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
         )
         if r.status_code == 200:
             return token
-        print(f"  [{loja}] Token Instagram inválido, tentando renovar...")
+        print(f" [{loja}] Token Instagram inválido, tentando renovar...")
         r2 = requests.get(
             "https://graph.instagram.com/refresh_access_token",
             params={"grant_type": "ig_refresh_token", "access_token": token},
@@ -150,9 +158,9 @@ def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
             novo = data["access_token"]
             config["accounts"][loja]["token"] = novo
             salvar_tokens(config)
-            print(f"  [{loja}] Token Instagram renovado.")
+            print(f" [{loja}] Token Instagram renovado.")
             return novo
-        print(f"  [{loja}] Não foi possível renovar token Instagram: {data.get('error', data)}")
+        print(f" [{loja}] Não foi possível renovar token Instagram: {data.get('error', data)}")
         return None
 
     # ── Facebook Login (API clássica) ───────────────────────────────────────
@@ -164,13 +172,13 @@ def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
     if r.status_code == 200:
         return token
 
-    print(f"  [{loja}] Token inválido (código {r.status_code}), tentando renovar...")
+    print(f" [{loja}] Token inválido (código {r.status_code}), tentando renovar...")
     r2 = requests.get(
         "https://graph.facebook.com/v19.0/oauth/access_token",
         params={
-            "grant_type":       "fb_exchange_token",
-            "client_id":        config["app_id"],
-            "client_secret":    config["app_secret"],
+            "grant_type": "fb_exchange_token",
+            "client_id": config["app_id"],
+            "client_secret": config["app_secret"],
             "fb_exchange_token": token,
         },
         timeout=10,
@@ -180,13 +188,12 @@ def verificar_e_renovar_token(loja: str, config: dict) -> str | None:
         novo = data["access_token"]
         config["accounts"][loja]["token"] = novo
         salvar_tokens(config)
-        print(f"  [{loja}] Token renovado com sucesso.")
+        print(f" [{loja}] Token renovado com sucesso.")
         return novo
 
-    print(f"  [{loja}] Não foi possível renovar: {data.get('error', data)}")
-    print(f"  [{loja}] Gere um novo token com: python token_helper.py")
+    print(f" [{loja}] Não foi possível renovar: {data.get('error', data)}")
+    print(f" [{loja}] Gere um novo token com: python token_helper.py")
     return None
-
 
 # ─── Pré-processamento de Imagem ─────────────────────────────────────────────
 
@@ -209,18 +216,17 @@ def preparar_imagem(src: Path, prefixo: str) -> Path:
             novo_w = int(h * 0.8)
             offset = (w - novo_w) // 2
             img = img.crop((offset, 0, offset + novo_w, h))
-            print(f"  Imagem {prefixo} recortada para 4:5 ({novo_w}x{h})")
+            print(f" Imagem {prefixo} recortada para 4:5 ({novo_w}x{h})")
         elif ratio > 1.92:
             # Muito largo — corta verticalmente para 1.91:1
             novo_h = int(w / 1.91)
             offset = (h - novo_h) // 2
             img = img.crop((0, offset, w, offset + novo_h))
-            print(f"  Imagem {prefixo} recortada para 1.91:1 ({w}x{novo_h})")
+            print(f" Imagem {prefixo} recortada para 1.91:1 ({w}x{novo_h})")
 
     dest = src.with_suffix(".jpg")
     img.save(dest, "JPEG", quality=95)
     return dest
-
 
 # ─── Upload de Imagem (imgbb) ─────────────────────────────────────────────────
 
@@ -240,11 +246,11 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
             )
         if r.status_code == 200 and r.text.strip().startswith("https://"):
             url = r.text.strip()
-            print(f"  Upload OK (catbox.moe): {url}")
+            print(f" Upload OK (catbox.moe): {url}")
             return url
-        print(f"  [AVISO] catbox.moe retornou: {r.text[:100]}")
+        print(f" [AVISO] catbox.moe retornou: {r.text[:100]}")
     except Exception as e:
-        print(f"  [AVISO] catbox.moe falhou: {e}")
+        print(f" [AVISO] catbox.moe falhou: {e}")
 
     # ── Tentativa 2: imgbb (com API key) ──────────────────────────────────────
     if api_key:
@@ -259,20 +265,19 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
             data = r.json()
             if data.get("success"):
                 url = data["data"]["url"]
-                print(f"  Upload OK (imgbb): {url}")
+                print(f" Upload OK (imgbb): {url}")
                 return url
-            print(f"  [ERRO imgbb] {data}")
+            print(f" [ERRO imgbb] {data}")
         except Exception as e:
-            print(f"  [AVISO] imgbb falhou: {e}")
+            print(f" [AVISO] imgbb falhou: {e}")
 
     return None
-
 
 # ─── Instagram Graph API ──────────────────────────────────────────────────────
 
 def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
-                     is_story: bool = False, is_video: bool = False,
-                     tentativas: int = 3, auth_type: str = "facebook_login") -> bool:
+                      is_story: bool = False, is_video: bool = False,
+                      tentativas: int = 3, auth_type: str = "facebook_login") -> bool:
     """
     Publica feed (imagem ou vídeo/Reels) ou story no Instagram via Graph API.
     Suporta Facebook Login (graph.facebook.com) e Instagram Login (graph.instagram.com).
@@ -292,18 +297,18 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
     # Monta parâmetros conforme o tipo de mídia
     if is_video:
         api_params = {"access_token": token, "video_url": image_url, "media_type": "REELS"}
-        data_body  = {"caption": caption}
+        data_body = {"caption": caption}
     elif is_story:
         api_params = {"access_token": token, "image_url": image_url, "media_type": "STORIES"}
-        data_body  = {}
+        data_body = {}
     else:
         api_params = {"access_token": token, "image_url": image_url}
-        data_body  = {"caption": caption}
+        data_body = {"caption": caption}
 
     for tentativa in range(1, tentativas + 1):
         if tentativa > 1:
             espera = tentativa * 10
-            print(f"    Tentativa {tentativa}/{tentativas} em {espera}s...")
+            print(f" Tentativa {tentativa}/{tentativas} em {espera}s...")
             time.sleep(espera)
 
         # Passo 1 — criar container
@@ -317,14 +322,14 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
         if "id" not in d1:
             err = d1.get("error", d1)
             is_transient = d1.get("error", {}).get("is_transient", False)
-            print(f"    [ERRO] Criar container {tipo}: {err}")
+            print(f" [ERRO] Criar container {tipo}: {err}")
             if is_transient and tentativa < tentativas:
                 continue
             return False
 
         creation_id = d1["id"]
         espera_proc = 30 if is_video else 5
-        print(f"    Container {tipo} criado: {creation_id}. Aguardando {espera_proc}s...")
+        print(f" Container {tipo} criado: {creation_id}. Aguardando {espera_proc}s...")
         time.sleep(espera_proc)
 
         # Passo 2 — publicar
@@ -336,54 +341,135 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
         )
         d2 = r2.json()
         if "id" in d2:
-            print(f"    {tipo} publicado! Post ID: {d2['id']}")
+            print(f" {tipo} publicado! Post ID: {d2['id']}")
             return True
 
         err2 = d2.get("error", d2)
-        print(f"    [ERRO] Publicar {tipo}: {err2}")
+        print(f" [ERRO] Publicar {tipo}: {err2}")
         return False
 
     return False
 
+def postar_carrossel_instagram(ig_user_id: str, token: str, image_urls: list, caption: str,
+                                auth_type: str = "facebook_login", tentativas: int = 3) -> bool:
+    """
+    Publica um carrossel de feed (2 a MAX_CAROUSEL_ITEMS imagens) via Graph API:
+    cria um container por imagem (is_carousel_item), depois um container "pai"
+    (media_type=CAROUSEL, children=[...]), e por fim publica o pai.
+    """
+    if auth_type == "instagram_login":
+        base = "https://graph.instagram.com/v19.0"
+    else:
+        base = "https://graph.facebook.com/v19.0"
+
+    if len(image_urls) > MAX_CAROUSEL_ITEMS:
+        print(f" [AVISO] Carrossel com {len(image_urls)} imagens excede o limite de "
+              f"{MAX_CAROUSEL_ITEMS} da API — cortando para as primeiras {MAX_CAROUSEL_ITEMS}.")
+        image_urls = image_urls[:MAX_CAROUSEL_ITEMS]
+
+    item_ids = []
+    for url in image_urls:
+        r = requests.post(
+            f"{base}/{ig_user_id}/media",
+            params={"access_token": token, "image_url": url, "is_carousel_item": "true"},
+            timeout=30,
+        )
+        d = r.json()
+        if "id" not in d:
+            print(f" [ERRO] Criar item do carrossel: {d.get('error', d)}")
+            return False
+        item_ids.append(d["id"])
+
+    for tentativa in range(1, tentativas + 1):
+        if tentativa > 1:
+            espera = tentativa * 10
+            print(f" Tentativa {tentativa}/{tentativas} em {espera}s...")
+            time.sleep(espera)
+
+        r1 = requests.post(
+            f"{base}/{ig_user_id}/media",
+            params={"access_token": token},
+            data={"media_type": "CAROUSEL", "children": ",".join(item_ids), "caption": caption},
+            timeout=30,
+        )
+        d1 = r1.json()
+        if "id" not in d1:
+            err = d1.get("error", d1)
+            print(f" [ERRO] Criar container do carrossel: {err}")
+            if d1.get("error", {}).get("is_transient", False) and tentativa < tentativas:
+                continue
+            return False
+
+        creation_id = d1["id"]
+        print(f" Container Carrossel criado: {creation_id}. Aguardando 10s...")
+        time.sleep(10)
+
+        r2 = requests.post(
+            f"{base}/{ig_user_id}/media_publish",
+            params={"access_token": token},
+            data={"creation_id": creation_id},
+            timeout=30,
+        )
+        d2 = r2.json()
+        if "id" in d2:
+            print(f" Carrossel publicado! Post ID: {d2['id']}")
+            return True
+
+        print(f" [ERRO] Publicar carrossel: {d2.get('error', d2)}")
+        return False
+
+    return False
 
 # ─── Helpers de arquivo ──────────────────────────────────────────────────────
 
-def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
-    """Extrai imagem ou vídeo e tenta extrair legenda (TXT/PDF) de um ZIP.
-    Retorna: (Path|None, str|None) — (caminho_arquivo, texto_legenda)
+def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
+    """Extrai as imagens (uma ou várias — carrossel) ou um vídeo, e tenta extrair
+    legenda (TXT/PDF) de um ZIP.
+
+    Quando há mais de uma imagem, elas são ordenadas pelo número final do nome
+    do arquivo (ex: "3_04.jpg" → 04), que é a ordem real do carrossel no
+    Sismaker — não pelo tamanho do arquivo, que não reflete posição nenhuma.
+
+    Retorna: (lista_de_paths, texto_legenda)
     """
     extensoes_imagem = {".jpg", ".jpeg", ".png"}
-    extensoes_video  = {".mp4", ".mov", ".avi", ".mkv"}
-    img_path = None
+    extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
+    paths: list[Path] = []
     caption_text = None
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
             nomes = z.namelist()
             imagens = [n for n in nomes if Path(n).suffix.lower() in extensoes_imagem]
-            videos  = [n for n in nomes if Path(n).suffix.lower() in extensoes_video]
-            textos  = [n for n in nomes if Path(n).suffix.lower() == ".txt"]
-            pdfs    = [n for n in nomes if Path(n).suffix.lower() == ".pdf"]
+            videos = [n for n in nomes if Path(n).suffix.lower() in extensoes_video]
+            textos = [n for n in nomes if Path(n).suffix.lower() == ".txt"]
+            pdfs = [n for n in nomes if Path(n).suffix.lower() == ".pdf"]
 
-            # Extrai imagem (maior arquivo = maior qualidade)
+            def ordem(nome: str) -> int:
+                m = re.search(r"(\d+)(?=\.\w+$)", nome)
+                return int(m.group(1)) if m else nomes.index(nome)
+
             if imagens:
-                imagens.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
-                nome_img = imagens[0]
-                ext = Path(nome_img).suffix
-                dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
-                dest.write_bytes(z.read(nome_img))
-                img_path = dest
-                print(f"  {prefixo.capitalize()} extraído do ZIP: {dest.name}")
+                imagens.sort(key=ordem)
+                for idx, nome_img in enumerate(imagens, 1):
+                    ext = Path(nome_img).suffix
+                    dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}_{idx:02d}{ext}"
+                    dest.write_bytes(z.read(nome_img))
+                    paths.append(dest)
+                if len(paths) == 1:
+                    print(f" {prefixo.capitalize()} extraído do ZIP: {paths[0].name}")
+                else:
+                    print(f" {len(paths)} imagens extraídas do ZIP (carrossel), prefixo '{prefixo}'")
             elif videos:
                 # Vídeo como fallback se não tiver imagem
-                videos.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
+                videos.sort(key=ordem)
                 nome_vid = videos[0]
                 ext = Path(nome_vid).suffix
                 dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
                 dest.write_bytes(z.read(nome_vid))
-                img_path = dest
-                print(f"  Vídeo extraído do ZIP: {dest.name}")
+                paths.append(dest)
+                print(f" Vídeo extraído do ZIP: {dest.name}")
             else:
-                print(f"  [AVISO] ZIP sem imagens ou vídeos: {zip_path.name}")
+                print(f" [AVISO] ZIP sem imagens ou vídeos: {zip_path.name}")
 
             # Tenta extrair legenda de TXT
             if textos:
@@ -391,9 +477,9 @@ def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
                     txt = z.read(textos[0]).decode("utf-8", errors="ignore").strip()
                     if len(txt) > 5:
                         caption_text = txt
-                        print(f"  Legenda TXT encontrada no ZIP ({len(txt)} chars)")
+                        print(f" Legenda TXT encontrada no ZIP ({len(txt)} chars)")
                 except Exception as e:
-                    print(f"  [AVISO] Erro ao ler TXT do ZIP: {e}")
+                    print(f" [AVISO] Erro ao ler TXT do ZIP: {e}")
 
             # Tenta extrair legenda de PDF (usa pdfplumber se disponível)
             if not caption_text and pdfs:
@@ -407,16 +493,15 @@ def extrair_imagem_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
                         ).strip()
                     if len(texto_pdf) > 5:
                         caption_text = texto_pdf
-                        print(f"  Legenda PDF encontrada no ZIP ({len(texto_pdf)} chars)")
+                        print(f" Legenda PDF encontrada no ZIP ({len(texto_pdf)} chars)")
                 except ImportError:
-                    print(f"  [AVISO] pdfplumber não instalado — legenda PDF ignorada")
+                    print(f" [AVISO] pdfplumber não instalado — legenda PDF ignorada")
                 except Exception as e:
-                    print(f"  [AVISO] Erro ao ler PDF do ZIP: {e}")
+                    print(f" [AVISO] Erro ao ler PDF do ZIP: {e}")
 
     except Exception as e:
-        print(f"  [AVISO] Erro ao extrair ZIP {zip_path.name}: {e}")
-    return img_path, caption_text
-
+        print(f" [AVISO] Erro ao extrair ZIP {zip_path.name}: {e}")
+    return paths, caption_text
 
 # ─── Scraping do Sismaker ─────────────────────────────────────────────────────
 
@@ -425,14 +510,13 @@ def buscar_posts(data_alvo: str = "") -> dict:
     Faz login no Sismaker, clica no card da data, baixa Feed e Story.
 
     data_alvo: "dd/mm" para forçar uma data específica (ex: "02/04").
-               Se vazio, usa a data de hoje.
+    Se vazio, usa a data de hoje.
 
     Retorna:
-        {
-          "feed":    Path ou None,
-          "story":   Path ou None,
-          "caption": str
-        }
+    {
+        "feeds": [{"paths": [Path, ...], "caption": str, "is_video": bool, "is_carousel": bool}, ...],
+        "stories": [{"paths": [Path], "caption": str}, ...],
+    }
     """
     hoje_dt = datetime.now(TZ_SP)
 
@@ -441,16 +525,15 @@ def buscar_posts(data_alvo: str = "") -> dict:
         partes = data_alvo.split("/")
         dia, mes = partes[0], partes[1]
         ano = partes[2] if len(partes) == 3 else str(hoje_dt.year)
-        data_curta = f"{dia}/{mes}"            # "02/04"
-        data_longa = f"{dia}/{mes}/{ano}"      # "02/04/2026"
-        data_iso   = f"{ano}-{mes}-{dia}"      # "2026-04-02"
+        data_curta = f"{dia}/{mes}"  # "02/04"
+        data_longa = f"{dia}/{mes}/{ano}"  # "02/04/2026"
+        data_iso = f"{ano}-{mes}-{dia}"  # "2026-04-02"
     else:
-        data_curta = hoje_dt.strftime("%d/%m")       # "03/04"
-        data_longa = hoje_dt.strftime("%d/%m/%Y")    # "03/04/2026"
-        data_iso   = hoje_dt.strftime("%Y-%m-%d")    # "2026-04-03"
+        data_curta = hoje_dt.strftime("%d/%m")  # "03/04"
+        data_longa = hoje_dt.strftime("%d/%m/%Y")  # "03/04/2026"
+        data_iso = hoje_dt.strftime("%Y-%m-%d")  # "2026-04-03"
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    # feeds e stories são listas de {"path": Path, "caption": str}
     resultado = {"feeds": [], "stories": []}
 
     with sync_playwright() as p:
@@ -463,7 +546,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
 
         try:
             # ── 1. Login ──────────────────────────────────────────────────
-            print(f"  Abrindo Sismaker...")
+            print(f" Abrindo Sismaker...")
             page.goto(
                 "https://novo.sismaker.com/espacolaser/users/sign_in",
                 wait_until="networkidle",
@@ -483,18 +566,30 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     pass
             page.locator('input[type="submit"], button[type="submit"]').first.click()
             page.wait_for_load_state("networkidle", timeout=15000)
-            print(f"  Login realizado.")
+            print(f" Login realizado.")
 
-            # ── 2. Página de cards (mês → data) ───────────────────────────
+            # ── 2. Página de cards (ano → mês → data) ──────────────────────
             page.goto(SISMAKER_URL, wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(2000)
             page.screenshot(path="debug_sismaker_cards.png")
 
+            # ── 2.0 Clica no card do ano — nível que o Sismaker adicionou
+            # depois que este script foi escrito originalmente (confirmado
+            # em 08/09/2026: a página de "REDES SOCIAIS" agora mostra um
+            # card por ano antes dos meses). ──────────────────────────────
+            ano_loc = page.get_by_text(str(hoje_dt.year), exact=False)
+            if ano_loc.count() > 0:
+                print(f" Card do ano encontrado: '{hoje_dt.year}'")
+                ano_loc.first.click()
+                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_timeout(1500)
+                page.screenshot(path="debug_sismaker_ano.png")
+
             # ── 2.1 Clica no card do mês (nível intermediário) ────────────
             MESES_PT = {
-                1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO",  4: "ABRIL",
-                5: "MAIO",    6: "JUNHO",     7: "JULHO",  8: "AGOSTO",
-                9: "SETEMBRO",10: "OUTUBRO",  11: "NOVEMBRO", 12: "DEZEMBRO"
+                1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO", 4: "ABRIL",
+                5: "MAIO", 6: "JUNHO", 7: "JULHO", 8: "AGOSTO",
+                9: "SETEMBRO",10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"
             }
             if data_alvo:
                 mes_num = int(data_alvo.split("/")[1])
@@ -508,13 +603,13 @@ def buscar_posts(data_alvo: str = "") -> dict:
                 # Fallback: procura qualquer elemento clicável contendo o nome do mês
                 mes_loc = page.locator(f"text={nome_mes}")
             if mes_loc.count() > 0:
-                print(f"  Card do mês encontrado: '{nome_mes}'")
+                print(f" Card do mês encontrado: '{nome_mes}'")
                 mes_loc.first.click()
                 page.wait_for_load_state("networkidle", timeout=15000)
                 page.wait_for_timeout(1500)
                 page.screenshot(path="debug_sismaker_mes.png")
             else:
-                print(f"  Card do mês '{nome_mes}' não encontrado — buscando data diretamente")
+                print(f" Card do mês '{nome_mes}' não encontrado — buscando data diretamente")
 
             # ── 2.2 Procura o card da data ────────────────────────────────
             card = None
@@ -522,12 +617,12 @@ def buscar_posts(data_alvo: str = "") -> dict:
                 loc = page.get_by_text(texto, exact=True)
                 if loc.count() > 0:
                     card = loc.first
-                    print(f"  Card encontrado: '{texto}'")
+                    print(f" Card encontrado: '{texto}'")
                     break
 
             if card is None:
-                print(f"  Nenhum card para {data_longa} ({data_curta}) encontrado.")
-                print(f"  Verifique debug_sismaker_cards.png.")
+                print(f" Nenhum card para {data_longa} ({data_curta}) encontrado.")
+                print(f" Verifique debug_sismaker_cards.png.")
                 return resultado
 
             # ── 3. Entrar no card ─────────────────────────────────────────
@@ -535,7 +630,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
             page.wait_for_load_state("networkidle", timeout=15000)
             page.wait_for_timeout(1500)
             page.screenshot(path="debug_sismaker_conteudo.png")
-            print(f"  Página de conteúdo aberta.")
+            print(f" Página de conteúdo aberta.")
 
             # ── 4. Extrair legenda ─────────────────────────────────────────
             # Tenta encontrar texto de legenda na página (textarea, div específico)
@@ -552,7 +647,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     txt = el.inner_text(timeout=2000).strip()
                     if txt and len(txt) > 10:
                         resultado["caption"] = txt
-                        print(f"  Legenda encontrada: {txt[:60]}...")
+                        print(f" Legenda encontrada: {txt[:60]}...")
                         break
                 except:
                     pass
@@ -560,11 +655,11 @@ def buscar_posts(data_alvo: str = "") -> dict:
             # ── 5. Baixar todos os arquivos disponíveis ────────────────────
             secoes = page.locator('text="Baixar"')
             qtd = secoes.count()
-            print(f"  {qtd} botão(ões) 'Baixar' encontrado(s).")
+            print(f" {qtd} botão(ões) 'Baixar' encontrado(s).")
 
             def baixar_arquivo(idx: int, label: str) -> tuple:
                 """Clica em Baixar, salva e extrai ZIP se necessário.
-                Retorna: (Path|None, str|None)
+                Retorna: (lista_de_paths, str|None)
                 """
                 try:
                     with page.expect_download(timeout=25000) as dl_info:
@@ -573,44 +668,58 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     dest_raw = DOWNLOAD_DIR / f"raw_{label}_{data_iso}{Path(dl.suggested_filename).suffix}"
                     dl.save_as(str(dest_raw))
                     if dest_raw.suffix.lower() == ".zip":
-                        return extrair_imagem_do_zip(dest_raw, label, data_iso)
-                    return dest_raw, None
+                        return extrair_midias_do_zip(dest_raw, label, data_iso)
+                    return [dest_raw], None
                 except Exception as e:
-                    print(f"  [AVISO] Download {label}: {e}")
-                    return None, None
+                    print(f" [AVISO] Download {label}: {e}")
+                    return [], None
 
-            arquivos_baixados = []  # lista de (Path, caption_str)
+            arquivos_baixados = []  # lista de (lista_paths, caption_str)
             for i in range(qtd):  # baixa TODOS os botões disponíveis
-                arq, cap = baixar_arquivo(i, str(i))
-                if arq:
-                    arquivos_baixados.append((arq, cap or CAPTION_PADRAO))
+                paths, cap = baixar_arquivo(i, str(i))
+                if paths:
+                    arquivos_baixados.append((paths, cap or CAPTION_PADRAO))
                 page.wait_for_timeout(800)
 
-            # ── 6. Classificar feed vs story pelo aspect ratio ─────────────
-            # Story: 9:16 → ratio ≈ 0.56  |  Feed: 4:5 → ratio = 0.80+
-            # Vídeos (.mp4 etc.) → sempre feed (Reels)
+            # ── 6. Classificar feed vs story ────────────────────────────────
+            # Mais de 1 imagem = carrossel (Instagram não tem story em
+            # carrossel via API, então isso é sempre Feed). Uma imagem só
+            # classifica por aspect ratio, igual antes:
+            # Story ≈ 9:16 (ratio < 0.7) | Feed ≈ 4:5+ | Vídeo → Feed (Reels).
             from PIL import Image as _PIL
             extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
-            for arq, cap in arquivos_baixados:
+            for paths, cap in arquivos_baixados:
+                if len(paths) > 1:
+                    resultado["feeds"].append({
+                        "paths": paths, "caption": cap, "is_video": False, "is_carousel": True,
+                    })
+                    print(f" → Feed (carrossel, {len(paths)} imagens) | legenda: {cap[:40]}...")
+                    continue
+
+                arq = paths[0]
                 try:
                     if arq.suffix.lower() in extensoes_video:
-                        resultado["feeds"].append({"path": arq, "caption": cap, "is_video": True})
-                        print(f"  → Feed (vídeo): {arq.name} | legenda: {cap[:40]}...")
+                        resultado["feeds"].append({
+                            "paths": [arq], "caption": cap, "is_video": True, "is_carousel": False,
+                        })
+                        print(f" → Feed (vídeo): {arq.name} | legenda: {cap[:40]}...")
                         continue
                     img = _PIL.open(arq)
                     ratio = img.width / img.height
                     img.close()
                     if ratio < 0.7:
-                        resultado["stories"].append({"path": arq, "caption": cap, "is_video": False})
-                        print(f"  → Story: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
+                        resultado["stories"].append({"paths": [arq], "caption": cap})
+                        print(f" → Story: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                     else:
-                        resultado["feeds"].append({"path": arq, "caption": cap, "is_video": False})
-                        print(f"  → Feed:  {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
+                        resultado["feeds"].append({
+                            "paths": [arq], "caption": cap, "is_video": False, "is_carousel": False,
+                        })
+                        print(f" → Feed: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
                 except Exception as e:
-                    print(f"  [AVISO] Não foi possível classificar {arq.name}: {e}")
+                    print(f" [AVISO] Não foi possível classificar {arq.name}: {e}")
 
         except Exception as e:
-            print(f"  [ERRO] Sismaker: {e}")
+            print(f" [ERRO] Sismaker: {e}")
             try:
                 page.screenshot(path="debug_sismaker_erro.png")
             except:
@@ -620,18 +729,17 @@ def buscar_posts(data_alvo: str = "") -> dict:
 
     return resultado
 
-
 # ─── Fluxo Principal ──────────────────────────────────────────────────────────
 
 def main():
     agora = datetime.now(TZ_SP)
     print("=" * 60)
-    print(f"  Instagram Poster — {agora.strftime('%d/%m/%Y %H:%M')}")
+    print(f" Instagram Poster — {agora.strftime('%d/%m/%Y %H:%M')}")
     print("=" * 60)
 
     # 0. Verificar se já postou hoje (evita duplo disparo 10h→18h)
     if not DATA_ALVO and ja_postou_hoje():
-        print("\n  Posts de hoje já foram publicados anteriormente. Encerrando.")
+        print("\n Posts de hoje já foram publicados anteriormente. Encerrando.")
         return
 
     # 1. Carregar configuração de tokens
@@ -652,42 +760,58 @@ def main():
     print(f"\n[1/3] Buscando posts de {label} no Sismaker...")
     posts = buscar_posts(data_busca)
 
-    feeds   = posts["feeds"]    # lista de {"path": Path, "caption": str}
-    stories = posts["stories"]  # lista de {"path": Path, "caption": str}
+    feeds = posts["feeds"]  # lista de {"paths": [...], "caption": str, "is_video": bool, "is_carousel": bool}
+    stories = posts["stories"]  # lista de {"paths": [...], "caption": str}
 
     if not feeds and not stories:
-        print(f"\n  Nenhum arquivo baixado para {label}. Encerrando.")
+        print(f"\n Nenhum arquivo baixado para {label}. Encerrando.")
         return
 
-    print(f"\n  Feeds encontrados:   {len(feeds)}")
-    print(f"  Stories encontrados: {len(stories)}")
+    print(f"\n Feeds encontrados: {len(feeds)}")
+    print(f" Stories encontrados: {len(stories)}")
 
     # 3. Preparar imagens e fazer upload para URL pública
-    # feed_urls e story_urls são listas de (url, caption)
     print("\n[2/3] Preparando e fazendo upload das imagens...")
-    feed_urls  = []
-    story_urls = []
-
+    feed_posts = []  # {"urls": [...], "caption": str, "is_video": bool, "is_carousel": bool}
     for i, item in enumerate(feeds):
         is_video = item.get("is_video", False)
+        is_carousel = item.get("is_carousel", False)
+
         if is_video:
-            # Vídeo: upload direto para catbox (sem preparar_imagem)
-            url = upload_imgbb(item["path"], imgbb_key)
+            url = upload_imgbb(item["paths"][0], imgbb_key)
+            if url:
+                feed_posts.append({"urls": [url], "caption": item["caption"], "is_video": True, "is_carousel": False})
+                print(f" Vídeo {i+1} URL ok | legenda: {item['caption'][:50]}...")
+            continue
+
+        urls = []
+        for j, p in enumerate(item["paths"]):
+            prep = preparar_imagem(p, f"feed_{i}_{j}")
+            url = upload_imgbb(prep, imgbb_key)
+            if url:
+                urls.append(url)
+            else:
+                print(f" [AVISO] Falha no upload de {p.name} — imagem removida do post")
+
+        if not urls:
+            continue
+
+        if is_carousel and len(urls) > 1:
+            feed_posts.append({"urls": urls, "caption": item["caption"], "is_video": False, "is_carousel": True})
+            print(f" Carrossel {i+1} ({len(urls)} imagens) pronto | legenda: {item['caption'][:50]}...")
         else:
-            url = upload_imgbb(preparar_imagem(item["path"], f"feed_{i}"), imgbb_key)
-        if url:
-            feed_urls.append((url, item["caption"], is_video))
-            tipo_str = "Vídeo" if is_video else "Feed"
-            print(f"  {tipo_str} {i+1} URL ok | legenda: {item['caption'][:50]}...")
+            feed_posts.append({"urls": [urls[0]], "caption": item["caption"], "is_video": False, "is_carousel": False})
+            print(f" Feed {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
+    story_posts = []  # (url, caption)
     for i, item in enumerate(stories):
-        url = upload_imgbb(preparar_imagem(item["path"], f"story_{i}"), imgbb_key)
+        url = upload_imgbb(preparar_imagem(item["paths"][0], f"story_{i}"), imgbb_key)
         if url:
-            story_urls.append((url, item["caption"]))
-            print(f"  Story {i+1} URL ok | legenda: {item['caption'][:50]}...")
+            story_posts.append((url, item["caption"]))
+            print(f" Story {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
-    if not feed_urls and not story_urls:
-        print("  Falha no upload de todas as imagens. Encerrando.")
+    if not feed_posts and not story_posts:
+        print(" Falha no upload de todas as imagens. Encerrando.")
         return
 
     # 4. Postar em cada conta
@@ -697,13 +821,13 @@ def main():
     for loja, conta in config["accounts"].items():
         if conta.get("disabled"):
             motivo = conta.get("disabled_reason", "desabilitado manualmente")
-            print(f"\n  [{loja}] DESABILITADO — {motivo[:80]}")
+            print(f"\n [{loja}] DESABILITADO — {motivo[:80]}")
             resultados[loja] = "DESABILITADO"
             continue
 
         ig_user_id = conta.get("ig_user_id", "")
         if not ig_user_id:
-            print(f"\n  [{loja}] Sem ig_user_id — pulando.")
+            print(f"\n [{loja}] Sem ig_user_id — pulando.")
             resultados[loja] = "IGNORADO (sem ig_user_id)"
             continue
 
@@ -713,32 +837,36 @@ def main():
             continue
 
         auth_type = conta.get("auth_type", "facebook_login")
-        print(f"\n  [{loja}] (auth: {auth_type})")
-        ok_feeds   = []
+        print(f"\n [{loja}] (auth: {auth_type})")
+        ok_feeds = []
         ok_stories = []
 
-        for feed_url, cap, is_video in feed_urls:
-            ok = postar_instagram(ig_user_id, token, feed_url, cap, is_story=False, is_video=is_video, auth_type=auth_type)
+        for post in feed_posts:
+            if post["is_carousel"]:
+                ok = postar_carrossel_instagram(ig_user_id, token, post["urls"], post["caption"], auth_type=auth_type)
+            else:
+                ok = postar_instagram(ig_user_id, token, post["urls"][0], post["caption"],
+                                       is_story=False, is_video=post["is_video"], auth_type=auth_type)
             ok_feeds.append(ok)
             time.sleep(3)
 
-        for story_url, cap in story_urls:
+        for story_url, cap in story_posts:
             ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True, auth_type=auth_type)
             ok_stories.append(ok)
             time.sleep(3)
 
         partes = []
-        if feed_urls:
+        if feed_posts:
             partes.append(f"Feeds={sum(ok_feeds)}/{len(ok_feeds)} OK")
-        if story_urls:
+        if story_posts:
             partes.append(f"Stories={sum(ok_stories)}/{len(ok_stories)} OK")
         resultados[loja] = " | ".join(partes)
 
     # Resumo final
     print("\n" + "=" * 60)
-    print("  RESUMO:")
+    print(" RESUMO:")
     for loja, status in resultados.items():
-        print(f"  {loja:35s} → {status}")
+        print(f" {loja:35s} → {status}")
     print("=" * 60)
 
     # Verifica se houve pelo menos 1 sucesso real (ex: "2/3 OK" conta; "0/1 OK" NÃO conta)
@@ -751,19 +879,18 @@ def main():
         # Salva estado para evitar reexecução às 18h
         marcar_postado(resultados)
 
-        # Monta mensagem WhatsApp
-        hora = agora.strftime("%H:%M")
-        data = agora.strftime("%d/%m/%Y")
-        linhas = [f"✅ *Posts do Instagram publicados!*",
-                  f"📅 {data} às {hora}\n"]
-        for loja, status in resultados.items():
-            icone = "✓" if "OK" in str(status) else "✗"
-            linhas.append(f"  {icone} @{loja}: {status}")
-        linhas.append("\n_Enviado automaticamente pelo bot Espaço Laser_")
+    # Monta mensagem WhatsApp
+    hora = agora.strftime("%H:%M")
+    data = agora.strftime("%d/%m/%Y")
+    linhas = [f"✅ *Posts do Instagram publicados!*",
+              f"📅 {data} às {hora}\n"]
+    for loja, status in resultados.items():
+        icone = "✓" if "OK" in str(status) else "✗"
+        linhas.append(f" {icone} @{loja}: {status}")
+    linhas.append("\n_Enviado automaticamente pelo bot Espaço Laser_")
 
-        print("\n  Enviando notificação WhatsApp...")
-        enviar_whatsapp("\n".join(linhas))
-
+    print("\n Enviando notificação WhatsApp...")
+    enviar_whatsapp("\n".join(linhas))
 
 if __name__ == "__main__":
     main()
