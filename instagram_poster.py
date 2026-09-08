@@ -48,7 +48,12 @@ ZAPI_CLIENT_TOKEN = os.environ.get("ZAPI_CLIENT_TOKEN", "")
 ZAPI_PHONE = os.environ.get("ZAPI_PHONE", "")
 
 # ─── Controle de estado (evita duplo disparo) ─────────────────────────────────
-STATE_FILE = "ig_poster_state.json"
+# Por padrão fica no diretório de trabalho (some a cada redeploy, container
+# é efêmero). Em produção (Railway) aponte STATE_FILE pra um caminho dentro
+# de um Volume (ex: /data/ig_poster_state.json) — assim o controle "já
+# postou hoje" sobrevive a redeploys, evitando postar de novo se o serviço
+# reiniciar entre os dois horários do cron.
+STATE_FILE = os.environ.get("STATE_FILE", "ig_poster_state.json")
 
 # ─── Configurações ────────────────────────────────────────────────────────────
 
