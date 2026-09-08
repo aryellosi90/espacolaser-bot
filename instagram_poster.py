@@ -39,10 +39,13 @@ except AttributeError:
     pass
 
 # ─── Z-API (WhatsApp) ────────────────────────────────────────────────────────
-ZAPI_INSTANCE = os.environ.get("ZAPI_INSTANCE", "3EB20541D8D291DF679CBE1FFBCB878E")
-ZAPI_TOKEN = os.environ.get("ZAPI_TOKEN", "C3ACF20485B471C0AF93AE1A")
-ZAPI_CLIENT_TOKEN = os.environ.get("ZAPI_CLIENT_TOKEN", "F36133724cab54a22b90414da356600faS")
-ZAPI_PHONE = os.environ.get("ZAPI_PHONE", "5511964115060")
+# Sem valor padrão de propósito — precisam vir de variável de ambiente
+# (Railway → Service → Variables). Se faltar alguma, enviar_whatsapp() só
+# avisa e pula a notificação, não derruba o resto do script.
+ZAPI_INSTANCE = os.environ.get("ZAPI_INSTANCE", "")
+ZAPI_TOKEN = os.environ.get("ZAPI_TOKEN", "")
+ZAPI_CLIENT_TOKEN = os.environ.get("ZAPI_CLIENT_TOKEN", "")
+ZAPI_PHONE = os.environ.get("ZAPI_PHONE", "")
 
 # ─── Controle de estado (evita duplo disparo) ─────────────────────────────────
 STATE_FILE = "ig_poster_state.json"
@@ -50,8 +53,11 @@ STATE_FILE = "ig_poster_state.json"
 # ─── Configurações ────────────────────────────────────────────────────────────
 
 SISMAKER_URL = "https://novo.sismaker.com/espacolaser/download_infinity_pages/44767"
-SISMAKER_LOGIN = os.environ.get("SISMAKER_LOGIN", "franqueado.aryel.losi@espacolaser.com.br")
-SISMAKER_SENHA = os.environ.get("SISMAKER_SENHA", "Espaco@Losiana1")
+# Sem valor padrão de propósito — configure SISMAKER_LOGIN/SISMAKER_SENHA como
+# variável de ambiente (Railway → Service → Variables). main() verifica que
+# as duas estão preenchidas antes de tentar logar.
+SISMAKER_LOGIN = os.environ.get("SISMAKER_LOGIN", "")
+SISMAKER_SENHA = os.environ.get("SISMAKER_SENHA", "")
 TOKENS_FILE = os.environ.get("TOKENS_FILE", "tokens.json")
 IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")
 TZ_SP = pytz.timezone("America/Sao_Paulo")
@@ -97,6 +103,10 @@ def marcar_postado(resumo: dict):
 
 def enviar_whatsapp(mensagem: str):
     """Envia mensagem de texto via Z-API."""
+    if not (ZAPI_INSTANCE and ZAPI_TOKEN and ZAPI_CLIENT_TOKEN and ZAPI_PHONE):
+        print(" [AVISO] Z-API não configurado (ZAPI_INSTANCE/ZAPI_TOKEN/ZAPI_CLIENT_TOKEN/"
+              "ZAPI_PHONE) — notificação pulada.")
+        return
     url = (f"https://api.z-api.io/instances/{ZAPI_INSTANCE}"
            f"/token/{ZAPI_TOKEN}/send-text")
     try:
@@ -116,13 +126,35 @@ def enviar_whatsapp(mensagem: str):
 # ─── Gerenciamento de Tokens ──────────────────────────────────────────────────
 
 def carregar_tokens() -> dict:
-    if not Path(TOKENS_FILE).exists():
-        raise FileNotFoundError(
-            f"Arquivo '{TOKENS_FILE}' não encontrado.\n"
-            "Execute primeiro: python token_helper.py"
-        )
-    with open(TOKENS_FILE, encoding="utf-8") as f:
-        return json.load(f)
+    """Carrega a config de tokens (app_id/app_secret/imgbb/contas).
+
+    Ordem de preferência:
+    1. Arquivo local TOKENS_FILE (útil pra rodar local, sem versionar — veja
+       tokens.example.json pro formato).
+    2. Variável de ambiente TOKENS_JSON (o conteúdo inteiro do tokens.json,
+       em uma linha só) — é assim que roda em produção no Railway, pra não
+       precisar commitar tokens de verdade no repositório (que é público).
+       Quando carregado dessa forma, é gravado em TOKENS_FILE pra permitir
+       que salvar_tokens() persista renovações de token durante a vida do
+       container (não sobrevive a um redeploy — nesse caso volta a ler do
+       TOKENS_JSON original).
+    """
+    if Path(TOKENS_FILE).exists():
+        with open(TOKENS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+
+    tokens_json_env = os.environ.get("TOKENS_JSON")
+    if tokens_json_env:
+        config = json.loads(tokens_json_env)
+        salvar_tokens(config)
+        return config
+
+    raise FileNotFoundError(
+        f"Nem '{TOKENS_FILE}' nem a variável de ambiente TOKENS_JSON foram encontrados.\n"
+        "Configure TOKENS_JSON no Railway (Service → Variables, com o conteúdo do "
+        "tokens.json numa linha só) ou rode localmente com um tokens.json "
+        "(veja tokens.example.json) — ou execute: python token_helper.py"
+    )
 
 def salvar_tokens(data: dict):
     with open(TOKENS_FILE, "w", encoding="utf-8") as f:
@@ -736,6 +768,10 @@ def main():
     print("=" * 60)
     print(f" Instagram Poster — {agora.strftime('%d/%m/%Y %H:%M')}")
     print("=" * 60)
+
+    if not SISMAKER_LOGIN or not SISMAKER_SENHA:
+        print("\n[ERRO] Configure SISMAKER_LOGIN e SISMAKER_SENHA como variável de ambiente.")
+        return
 
     # 0. Verificar se já postou hoje (evita duplo disparo 10h→18h)
     if not DATA_ALVO and ja_postou_hoje():

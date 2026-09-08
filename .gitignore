@@ -1,0 +1,6 @@
+tokens.json
+ig_poster_state.json
+__pycache__/
+*.pyc
+debug_*.png
+poster.log

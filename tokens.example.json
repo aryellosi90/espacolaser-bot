@@ -1,0 +1,26 @@
+{
+  "app_id": "SEU_APP_ID_DO_META",
+  "app_secret": "SEU_APP_SECRET_DO_META",
+  "imgbb_api_key": "SUA_CHAVE_IMGBB",
+  "accounts": {
+    "espacolaser.uba": {
+      "token": "TOKEN_DE_ACESSO_DA_PAGINA",
+      "ig_user_id": "ID_DA_CONTA_INSTAGRAM"
+    },
+    "espacolaser.ibiuna": {
+      "token": "TOKEN_DE_ACESSO_DA_PAGINA",
+      "ig_user_id": "ID_DA_CONTA_INSTAGRAM"
+    },
+    "espacolaser.monlevade": {
+      "token": "TOKEN_INSTAGRAM_LOGIN",
+      "ig_user_id": "ID_DA_CONTA_INSTAGRAM",
+      "auth_type": "instagram_login",
+      "ig_app_id": "APP_ID_DO_INSTAGRAM_LOGIN",
+      "ig_app_secret": "APP_SECRET_DO_INSTAGRAM_LOGIN"
+    },
+    "espacolaser.patrociniomg": {
+      "token": "TOKEN_DE_ACESSO_DA_PAGINA",
+      "ig_user_id": "ID_DA_CONTA_INSTAGRAM"
+    }
+  }
+}
