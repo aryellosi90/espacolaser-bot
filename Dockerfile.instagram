@@ -18,6 +18,7 @@ RUN playwright install chromium
 # (ver carregar_tokens() em instagram_poster.py e tokens.example.json).
 COPY instagram_poster.py .
 COPY token_helper.py .
+COPY write_env.py .
 
 # Agendamento: roda todo dia às 10h, 14h, 18h e 20h (horário de Brasília = UTC-3)
 # Instala cron
@@ -52,4 +53,10 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /
 # reiniciar,
 # redeploy incluso (foi exatamente isso que causou uma postagem indesejada
 # em 08/09/2026, com uma variável de teste antiga ainda configurada).
-CMD sh -c 'printenv > /etc/container_env && touch /app/poster.log && cron && tail -f /app/poster.log'
+#
+# write_env.py (não "printenv > arquivo" puro) grava as variáveis com
+# escape de shell (shlex.quote) — sem isso, qualquer valor com aspas/chaves
+# (como o TOKENS_JSON) quebra a leitura do arquivo pelo cron e derruba as
+# variáveis seguintes junto (foi o que aconteceu em 09/09/2026: SISMAKER_LOGIN
+# "sumiu" porque vinha depois do TOKENS_JSON no arquivo).
+CMD sh -c 'python3 write_env.py && touch /app/poster.log && cron && tail -f /app/poster.log'
