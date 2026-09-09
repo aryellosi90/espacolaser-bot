@@ -312,6 +312,37 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
 
 # ─── Instagram Graph API ──────────────────────────────────────────────────────
 
+def _aguardar_processamento(base: str, creation_id: str, token: str,
+                             timeout_s: int = 180, intervalo: int = 10) -> bool:
+    """Espera o container de mídia terminar de processar do lado do Meta antes
+    de publicar. Essencial pra vídeo/Reels — o tempo de processamento varia
+    (às vezes passa bem de 30s), e publicar antes de terminar dá o erro
+    "Media ID is not available" (code 9007). Imagem processa quase na hora,
+    mas consultar do mesmo jeito não tem custo.
+    Retorna True se ficou pronto (FINISHED), False se deu erro ou estourou o tempo.
+    """
+    decorrido = 0
+    while decorrido < timeout_s:
+        try:
+            r = requests.get(
+                f"{base}/{creation_id}",
+                params={"access_token": token, "fields": "status_code"},
+                timeout=15,
+            )
+            status = r.json().get("status_code")
+        except Exception as e:
+            print(f" [AVISO] Falha ao consultar status do processamento: {e}")
+            status = None
+        if status == "FINISHED":
+            return True
+        if status == "ERROR":
+            print(" [ERRO] Processamento da mídia falhou (status_code=ERROR).")
+            return False
+        time.sleep(intervalo)
+        decorrido += intervalo
+    print(f" [AVISO] Mídia não terminou de processar em {timeout_s}s.")
+    return False
+
 def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
                       is_story: bool = False, is_video: bool = False,
                       tentativas: int = 3, auth_type: str = "facebook_login") -> bool:
@@ -365,9 +396,13 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
             return False
 
         creation_id = d1["id"]
-        espera_proc = 30 if is_video else 5
-        print(f" Container {tipo} criado: {creation_id}. Aguardando {espera_proc}s...")
-        time.sleep(espera_proc)
+        print(f" Container {tipo} criado: {creation_id}. Aguardando processamento...")
+        pronto = _aguardar_processamento(base, creation_id, token,
+                                          timeout_s=180 if is_video else 30)
+        if not pronto:
+            if tentativa < tentativas:
+                continue
+            return False
 
         # Passo 2 — publicar
         r2 = requests.post(
@@ -383,6 +418,12 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
 
         err2 = d2.get("error", d2)
         print(f" [ERRO] Publicar {tipo}: {err2}")
+        # code 9007 = "Media ID is not available" — a mídia ainda não estava
+        # pronta apesar do status_code dizer FINISHED (raro, mas acontece).
+        # is_transient cobre outros erros passageiros do lado do Meta.
+        retentavel = err2.get("code") == 9007 or err2.get("is_transient", False)
+        if retentavel and tentativa < tentativas:
+            continue
         return False
 
     return False
@@ -438,8 +479,12 @@ def postar_carrossel_instagram(ig_user_id: str, token: str, image_urls: list, ca
             return False
 
         creation_id = d1["id"]
-        print(f" Container Carrossel criado: {creation_id}. Aguardando 10s...")
-        time.sleep(10)
+        print(f" Container Carrossel criado: {creation_id}. Aguardando processamento...")
+        pronto = _aguardar_processamento(base, creation_id, token, timeout_s=60)
+        if not pronto:
+            if tentativa < tentativas:
+                continue
+            return False
 
         r2 = requests.post(
             f"{base}/{ig_user_id}/media_publish",
@@ -452,7 +497,11 @@ def postar_carrossel_instagram(ig_user_id: str, token: str, image_urls: list, ca
             print(f" Carrossel publicado! Post ID: {d2['id']}")
             return True
 
-        print(f" [ERRO] Publicar carrossel: {d2.get('error', d2)}")
+        err2 = d2.get("error", d2)
+        print(f" [ERRO] Publicar carrossel: {err2}")
+        retentavel = err2.get("code") == 9007 or err2.get("is_transient", False)
+        if retentavel and tentativa < tentativas:
+            continue
         return False
 
     return False
