@@ -764,6 +764,19 @@ def buscar_posts(data_alvo: str = "") -> dict:
             qtd = secoes.count()
             print(f" {qtd} botão(ões) 'Baixar' encontrado(s).")
 
+            def rotulo_botao(idx: int) -> str:
+                """Lê o rótulo que o próprio Sismaker mostra acima do botão
+                (ex: "REELS: ...\\nreels - 1080x1920px", "STORY: ...\\nstory -
+                ...", "FEED: ...\\npost feed - ..."). É a forma confiável de
+                saber se é Feed, Story ou Reels — aspect ratio sozinho NÃO dá
+                pra usar aqui porque Reels e Story são os dois 9:16.
+                """
+                try:
+                    ancestor = secoes.nth(idx).locator("xpath=ancestor::*[2]")
+                    return ancestor.inner_text(timeout=1000).strip().lower()
+                except Exception:
+                    return ""
+
             def baixar_arquivo(idx: int, label: str) -> tuple:
                 """Clica em Baixar, salva e extrai ZIP se necessário.
                 Retorna: (lista_de_paths, str|None)
@@ -781,22 +794,29 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     print(f" [AVISO] Download {label}: {e}")
                     return [], None
 
-            arquivos_baixados = []  # lista de (lista_paths, caption_str)
+            arquivos_baixados = []  # lista de (lista_paths, caption_str, rotulo)
             for i in range(qtd):  # baixa TODOS os botões disponíveis
+                rotulo = rotulo_botao(i)
                 paths, cap = baixar_arquivo(i, str(i))
                 if paths:
-                    arquivos_baixados.append((paths, cap or CAPTION_PADRAO))
+                    arquivos_baixados.append((paths, cap or CAPTION_PADRAO, rotulo))
                 page.wait_for_timeout(800)
 
             # ── 6. Classificar feed vs story ────────────────────────────────
-            # Mais de 1 imagem = carrossel (Instagram não tem story em
-            # carrossel via API, então isso é sempre Feed). Uma imagem só
-            # classifica por aspect ratio, igual antes:
-            # Story ≈ 9:16 (ratio < 0.7) | Feed ≈ 4:5+ | Vídeo → Feed (Reels).
+            # Prioridade: o rótulo do Sismaker ("story"/"reels"/"feed") acima
+            # do botão — é o que decide de verdade lá no site. Só cai pro
+            # aspect ratio (Story ≈ 9:16, ratio < 0.7) quando não dá pra ler
+            # o rótulo, como rede de segurança.
             from PIL import Image as _PIL
             extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
-            for paths, cap in arquivos_baixados:
+            for paths, cap, rotulo in arquivos_baixados:
+                eh_story_rotulo = "story" in rotulo
+                eh_reels_rotulo = "reels" in rotulo
+                eh_feed_rotulo = "feed" in rotulo
+
                 if len(paths) > 1:
+                    # Carrossel — Instagram não tem story em carrossel via API,
+                    # então isso é sempre Feed independente do rótulo.
                     resultado["feeds"].append({
                         "paths": paths, "caption": cap, "is_video": False, "is_carousel": True,
                     })
@@ -805,23 +825,36 @@ def buscar_posts(data_alvo: str = "") -> dict:
 
                 arq = paths[0]
                 try:
-                    if arq.suffix.lower() in extensoes_video:
-                        resultado["feeds"].append({
-                            "paths": [arq], "caption": cap, "is_video": True, "is_carousel": False,
-                        })
-                        print(f" → Feed (vídeo): {arq.name} | legenda: {cap[:40]}...")
+                    is_video = arq.suffix.lower() in extensoes_video
+
+                    if eh_story_rotulo:
+                        resultado["stories"].append({"paths": [arq], "caption": cap})
+                        print(f" → Story ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
+                              f"{arq.name} | legenda: {cap[:40]}...")
                         continue
+
+                    if is_video or eh_reels_rotulo or eh_feed_rotulo:
+                        resultado["feeds"].append({
+                            "paths": [arq], "caption": cap, "is_video": is_video, "is_carousel": False,
+                        })
+                        print(f" → Feed ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
+                              f"{arq.name} | legenda: {cap[:40]}...")
+                        continue
+
+                    # Sem rótulo legível (Sismaker mudou o layout?) — cai pro
+                    # aspect ratio como antes, só pra imagem (vídeo sem rótulo
+                    # vai pro Feed por padrão, é o caso mais comum).
                     img = _PIL.open(arq)
                     ratio = img.width / img.height
                     img.close()
                     if ratio < 0.7:
                         resultado["stories"].append({"paths": [arq], "caption": cap})
-                        print(f" → Story: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
+                        print(f" → Story ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
                     else:
                         resultado["feeds"].append({
                             "paths": [arq], "caption": cap, "is_video": False, "is_carousel": False,
                         })
-                        print(f" → Feed: {arq.name} ({ratio:.2f}) | legenda: {cap[:40]}...")
+                        print(f" → Feed ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
                 except Exception as e:
                     print(f" [AVISO] Não foi possível classificar {arq.name}: {e}")
 
