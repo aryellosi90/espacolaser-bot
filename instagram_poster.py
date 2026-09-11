@@ -22,6 +22,7 @@ import sys
 import json
 import time
 import base64
+import mimetypes
 import zipfile
 import requests
 import tempfile
@@ -269,27 +270,47 @@ def preparar_imagem(src: Path, prefixo: str) -> Path:
 
 def upload_imgbb(image_path: Path, api_key: str) -> str | None:
     """
-    Faz upload da imagem em host público para o Instagram conseguir baixar.
-    Tenta catbox.moe primeiro (sem hotlink protection), depois imgbb como fallback.
+    Faz upload da mídia (imagem OU vídeo) em host público para o Instagram
+    conseguir baixar. Tenta catbox.moe primeiro (sem hotlink protection, e é
+    o único dos dois que aceita vídeo); imgbb só entra como fallback pra
+    IMAGEM — imgbb não suporta vídeo, tentar lá sempre dá "Unsupported or
+    unrecognized file format", então nem tenta nesse caso.
     """
-    # ── Tentativa 1: catbox.moe (sem API key, sem hotlink protection) ─────────
-    try:
-        with open(image_path, "rb") as f:
-            r = requests.post(
-                "https://catbox.moe/user/api.php",
-                data={"reqtype": "fileupload"},
-                files={"fileToUpload": (image_path.name, f, "image/jpeg")},
-                timeout=30,
-            )
-        if r.status_code == 200 and r.text.strip().startswith("https://"):
-            url = r.text.strip()
-            print(f" Upload OK (catbox.moe): {url}")
-            return url
-        print(f" [AVISO] catbox.moe retornou: {r.text[:100]}")
-    except Exception as e:
-        print(f" [AVISO] catbox.moe falhou: {e}")
+    extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
+    is_video = image_path.suffix.lower() in extensoes_video
+    content_type = mimetypes.guess_type(image_path.name)[0] or (
+        "video/mp4" if is_video else "image/jpeg"
+    )
 
-    # ── Tentativa 2: imgbb (com API key) ──────────────────────────────────────
+    # Vídeo (Reels) pode passar de 20MB — 30s não é tempo suficiente pro
+    # upload em conexões mais lentas. Dá bem mais tempo e uma retentativa
+    # pra vídeo (foi o que causou o post de 10/09/2026 nunca sair: timeout
+    # no catbox + fallback pro imgbb, que rejeita vídeo de cara).
+    timeout_catbox = 180 if is_video else 30
+    tentativas_catbox = 2 if is_video else 1
+
+    for tentativa in range(1, tentativas_catbox + 1):
+        try:
+            with open(image_path, "rb") as f:
+                r = requests.post(
+                    "https://catbox.moe/user/api.php",
+                    data={"reqtype": "fileupload"},
+                    files={"fileToUpload": (image_path.name, f, content_type)},
+                    timeout=timeout_catbox,
+                )
+            if r.status_code == 200 and r.text.strip().startswith("https://"):
+                url = r.text.strip()
+                print(f" Upload OK (catbox.moe): {url}")
+                return url
+            print(f" [AVISO] catbox.moe retornou: {r.text[:100]}")
+        except Exception as e:
+            print(f" [AVISO] catbox.moe falhou (tentativa {tentativa}/{tentativas_catbox}): {e}")
+
+    if is_video:
+        print(" [ERRO] catbox.moe falhou pro vídeo — imgbb não suporta vídeo, sem host disponível.")
+        return None
+
+    # ── Fallback: imgbb (só imagem — não suporta vídeo) ────────────────────────
     if api_key:
         try:
             with open(image_path, "rb") as f:
