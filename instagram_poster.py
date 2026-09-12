@@ -70,6 +70,15 @@ TZ_SP = pytz.timezone("America/Sao_Paulo")
 HEADLESS = os.environ.get("HEADLESS", "true").lower() == "true"
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "sismaker_posts"
 
+# Hospedagem própria da mídia (ver fileserver.py) — usada antes de tentar
+# hosts de terceiros (catbox/imgbb), que se mostraram pouco confiáveis:
+# throttling, e o fetcher do próprio Meta sendo barrado ao processar Feed/
+# Reels/Story mesmo com o upload em si tendo funcionado (observado em
+# 09-12/09/2026). PUBLIC_BASE_URL é o domínio público que o Railway gera
+# pra este serviço (Settings → Networking → Generate Domain).
+PUBLIC_UPLOAD_DIR = Path(os.environ.get("PUBLIC_UPLOAD_DIR", "/app/public_uploads"))
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+
 # Limite de itens por carrossel imposto pela Graph API do Instagram (o app
 # nativo aceita até 20, mas a API de publicação continua limitada a 10 —
 # confirmado testando as versões v19 a v23 em 08/09/2026).
@@ -266,16 +275,46 @@ def preparar_imagem(src: Path, prefixo: str) -> Path:
     img.save(dest, "JPEG", quality=95)
     return dest
 
+# ─── Hospedagem própria (fileserver.py) ────────────────────────────────────────
+
+def hospedar_localmente(caminho: Path) -> str | None:
+    """Copia o arquivo pra pasta servida pelo fileserver.py deste mesmo
+    container e devolve a URL pública (PUBLIC_BASE_URL + nome aleatório).
+    Não depende de nenhum serviço de terceiros — é a opção preferida
+    quando PUBLIC_BASE_URL está configurado (ver comentário na declaração
+    da variável)."""
+    if not PUBLIC_BASE_URL:
+        return None
+    try:
+        import shutil
+        import uuid
+        PUBLIC_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        nome = f"{uuid.uuid4().hex}{caminho.suffix}"
+        destino = PUBLIC_UPLOAD_DIR / nome
+        shutil.copy(caminho, destino)
+        url = f"{PUBLIC_BASE_URL}/{nome}"
+        print(f" Hospedado no próprio servidor: {url}")
+        return url
+    except Exception as e:
+        print(f" [AVISO] Falha ao hospedar localmente: {e}")
+        return None
+
 # ─── Upload de Imagem (imgbb) ─────────────────────────────────────────────────
 
 def upload_imgbb(image_path: Path, api_key: str) -> str | None:
     """
     Faz upload da mídia (imagem OU vídeo) em host público para o Instagram
-    conseguir baixar. Tenta catbox.moe primeiro (sem hotlink protection, e é
-    o único dos dois que aceita vídeo); imgbb só entra como fallback pra
-    IMAGEM — imgbb não suporta vídeo, tentar lá sempre dá "Unsupported or
+    conseguir baixar. Tenta primeiro a hospedagem própria deste container
+    (hospedar_localmente — não depende de terceiros), depois catbox.moe
+    (sem hotlink protection, e é o único dos dois hosts de terceiros que
+    aceita vídeo); imgbb só entra como último fallback pra IMAGEM — imgbb
+    não suporta vídeo, tentar lá sempre dá "Unsupported or
     unrecognized file format", então nem tenta nesse caso.
     """
+    url_propria = hospedar_localmente(image_path)
+    if url_propria:
+        return url_propria
+
     extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
     is_video = image_path.suffix.lower() in extensoes_video
     content_type = mimetypes.guess_type(image_path.name)[0] or (

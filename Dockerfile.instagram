@@ -19,6 +19,7 @@ RUN playwright install chromium
 COPY instagram_poster.py .
 COPY token_helper.py .
 COPY write_env.py .
+COPY fileserver.py .
 
 # Agendamento: roda todo dia às 10h, 14h, 18h e 20h (horário de Brasília = UTC-3)
 # Instala cron
@@ -45,6 +46,9 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /
 # ZAPI_TOKEN           notificação por WhatsApp, não quebra o resto)
 # ZAPI_CLIENT_TOKEN
 # ZAPI_PHONE         — Número WhatsApp destino (ex: 5511964115060)
+# PUBLIC_BASE_URL    — domínio público que o Railway gera pra este serviço
+#                      (Settings → Networking → Generate Domain, porta 8080)
+#                      — sem isso, cai pro catbox.moe/imgbb como antes
 
 # Script de inicialização: salva env vars do Railway, cria log e sobe cron em
 # foreground. NÃO roda o poster imediatamente ao subir o container — só via
@@ -59,4 +63,6 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /
 # (como o TOKENS_JSON) quebra a leitura do arquivo pelo cron e derruba as
 # variáveis seguintes junto (foi o que aconteceu em 09/09/2026: SISMAKER_LOGIN
 # "sumiu" porque vinha depois do TOKENS_JSON no arquivo).
-CMD sh -c 'python3 write_env.py && touch /app/poster.log && cron && tail -f /app/poster.log'
+# fileserver.py sobe em background, escutando a porta 8080 — é o que o
+# Railway expõe publicamente (Settings → Networking → Generate Domain).
+CMD sh -c 'python3 write_env.py && mkdir -p /app/public_uploads && python3 fileserver.py & touch /app/poster.log && cron && tail -f /app/poster.log'
