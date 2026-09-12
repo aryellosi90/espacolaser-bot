@@ -483,7 +483,14 @@ def main():
         browser.close()
 
     # 8) Verificar se há vendas
-    lojas = dados.get("lojas", [])
+    # Filtra lojas com R$0,00 — a tabela do EVUP passa a listar uma loja
+    # (ex: JM, IBIUNA) assim que ela aparece no sistema, mesmo sem
+    # nenhuma venda ainda. Sem esse filtro, isso conta como "dado novo"
+    # pro hash e reenvia o relatório sem nenhuma venda ter mudado de
+    # verdade (foi o que aconteceu em 12/09/2026: mesmo total, reenviado
+    # 2x só porque uma loja zerada apareceu na lista).
+    lojas = [l for l in dados.get("lojas", []) if valor_para_numero(l["valor_liquido"]) > 0]
+    dados["lojas"] = lojas
 
     if not lojas:
         print("Sem vendas no momento. Nada enviado.")
