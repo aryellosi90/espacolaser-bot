@@ -144,28 +144,36 @@ def carregar_tokens() -> dict:
     """Carrega a config de tokens (app_id/app_secret/imgbb/contas).
 
     Ordem de preferência:
-    1. Arquivo local TOKENS_FILE (útil pra rodar local, sem versionar — veja
-       tokens.example.json pro formato).
-    2. Variável de ambiente TOKENS_JSON (o conteúdo inteiro do tokens.json,
+    1. Variável de ambiente TOKENS_JSON (o conteúdo inteiro do tokens.json,
        em uma linha só) — é assim que roda em produção no Railway, pra não
        precisar commitar tokens de verdade no repositório (que é público).
-       Quando carregado dessa forma, é gravado em TOKENS_FILE pra permitir
-       que salvar_tokens() persista renovações de token durante a vida do
-       container (não sobrevive a um redeploy — nesse caso volta a ler do
-       TOKENS_JSON original).
-    """
-    if Path(TOKENS_FILE).exists():
-        with open(TOKENS_FILE, encoding="utf-8") as f:
-            return json.load(f)
+       Sempre que definida, é a fonte da verdade — e é regravada em
+       TOKENS_FILE (útil só pra registrar renovação de token nos logs;
+       NÃO é o que decide o que carregar na próxima vez, veja abaixo).
+    2. Arquivo local TOKENS_FILE — só entra em jogo quando TOKENS_JSON não
+       está definida (uso local, sem versionar — veja tokens.example.json).
 
+    IMPORTANTE: TOKENS_JSON sempre tem prioridade sobre o arquivo, mesmo
+    que o arquivo já exista de uma execução anterior. Antes disso, um
+    TOKENS_FILE remanescente no Volume (gravado por uma run anterior)
+    ficava "preso" e uma mudança em TOKENS_JSON no Railway (ex: reativar
+    uma loja) nunca tinha efeito, porque o arquivo velho sempre ganhava —
+    foi exatamente o que aconteceu em 12/09/2026 (reabilitação de 3 lojas
+    não pegou porque o Volume já tinha um tokens.json de uma run anterior
+    com elas desabilitadas).
+    """
     tokens_json_env = os.environ.get("TOKENS_JSON")
     if tokens_json_env:
         config = json.loads(tokens_json_env)
         salvar_tokens(config)
         return config
 
+    if Path(TOKENS_FILE).exists():
+        with open(TOKENS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+
     raise FileNotFoundError(
-        f"Nem '{TOKENS_FILE}' nem a variável de ambiente TOKENS_JSON foram encontrados.\n"
+        f"Nem a variável de ambiente TOKENS_JSON nem '{TOKENS_FILE}' foram encontrados.\n"
         "Configure TOKENS_JSON no Railway (Service → Variables, com o conteúdo do "
         "tokens.json numa linha só) ou rode localmente com um tokens.json "
         "(veja tokens.example.json) — ou execute: python token_helper.py"
