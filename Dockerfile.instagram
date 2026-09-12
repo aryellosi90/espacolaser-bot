@@ -31,12 +31,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cron tzd
 # garantir horário correto. ja_postou_hoje()/marcar_postado() já cuidam de
 # não postar de novo nas execuções seguintes do mesmo dia, então rodar mais
 # vezes só aumenta a chance de pegar a arte assim que o Sismaker publicar.
-#
-# DISPARO ÚNICO TEMPORÁRIO (12/09/2026, 11:47) — valida a correção de hoje
-# (hospedagem própria + prioridade do TOKENS_JSON) numa execução real, sem
-# reintroduzir "roda toda vez que o container sobe" (isso é uma entrada
-# de cron pra um horário específico, não repete). Remover depois.
-RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n47 11 12 9 * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
+RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
 
 # Variáveis de ambiente esperadas no Railway (Service → Variables):
 # SISMAKER_LOGIN     — e-mail de login no Sismaker (obrigatório)
