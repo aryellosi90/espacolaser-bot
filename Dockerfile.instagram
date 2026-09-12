@@ -65,4 +65,9 @@ RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /
 # "sumiu" porque vinha depois do TOKENS_JSON no arquivo).
 # fileserver.py sobe em background, escutando a porta 8080 — é o que o
 # Railway expõe publicamente (Settings → Networking → Generate Domain).
-CMD sh -c 'python3 write_env.py && mkdir -p /app/public_uploads && python3 fileserver.py & touch /app/poster.log && cron && tail -f /app/poster.log'
+#
+# TESTE TEMPORÁRIO (12/09/2026) — reverter depois de confirmar a
+# hospedagem própria: roda o poster uma vez já na subida, pra validar
+# fileserver.py numa execução real (sem SSH pro container não dá pra
+# testar de outro jeito).
+CMD sh -c 'python3 write_env.py && mkdir -p /app/public_uploads && python3 fileserver.py & touch /app/poster.log && cron && python3 instagram_poster.py 2>&1 | tee -a /app/poster.log; tail -f /app/poster.log'
