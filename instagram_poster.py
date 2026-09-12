@@ -282,11 +282,16 @@ def upload_imgbb(image_path: Path, api_key: str) -> str | None:
         "video/mp4" if is_video else "image/jpeg"
     )
 
-    # Vídeo (Reels) pode passar de 20MB — 30s não é tempo suficiente pro
-    # upload em conexões mais lentas. Dá bem mais tempo e uma retentativa
-    # pra vídeo (foi o que causou o post de 10/09/2026 nunca sair: timeout
-    # no catbox + fallback pro imgbb, que rejeita vídeo de cara).
-    timeout_catbox = 180 if is_video else 30
+    # Vídeo (Reels) varia muito de tamanho — já vimos de ~20MB a mais de
+    # 120MB no mesmo mês. Um timeout fixo de 180s não é suficiente pros
+    # maiores (um vídeo de 123MB levou quase 7min pra subir numa conexão
+    # comum em 12/09/2026). Escala o timeout pelo tamanho do arquivo, com
+    # um piso generoso e um teto pra não travar pra sempre numa rede ruim.
+    if is_video:
+        tamanho_mb = image_path.stat().st_size / (1024 * 1024)
+        timeout_catbox = min(900, max(180, int(60 + tamanho_mb * 5)))
+    else:
+        timeout_catbox = 30
     tentativas_catbox = 2 if is_video else 1
 
     for tentativa in range(1, tentativas_catbox + 1):
