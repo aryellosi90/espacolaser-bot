@@ -582,18 +582,30 @@ def postar_carrossel_instagram(ig_user_id: str, token: str, image_urls: list, ca
 # ─── Helpers de arquivo ──────────────────────────────────────────────────────
 
 def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
-    """Extrai as imagens (uma ou várias — carrossel) ou um vídeo, e tenta extrair
-    legenda (TXT/PDF) de um ZIP.
+    """Extrai as imagens (uma, várias — carrossel — ou uma combinação de
+    Feed+Story) ou um vídeo, e tenta extrair legenda (TXT/PDF) de um ZIP.
 
     Quando há mais de uma imagem, elas são ordenadas pelo número final do nome
     do arquivo (ex: "3_04.jpg" → 04), que é a ordem real do carrossel no
     Sismaker — não pelo tamanho do arquivo, que não reflete posição nenhuma.
 
-    Retorna: (lista_de_paths, texto_legenda)
+    Alguns ZIPs trazem a MESMA arte em dois formatos dentro do mesmo botão
+    "Baixar" — ex: "0_1409_Feed.jpg" (4:5) + "2_1409_Story.jpg" (9:16),
+    confirmado em 14/09/2026. Sem separar isso, as duas imagens viravam um
+    carrossel de 2 itens (errado — nem é a mesma arte repetida à toa, é
+    Feed e Story juntos). Por isso cada imagem é checada pelo nome: se tiver
+    "story"/"feed" no nome, vira seu próprio grupo; do contrário entra no
+    grupo "carrossel" (sem rótulo — caso normal de várias fotos numeradas).
+
+    Retorna: (grupos, texto_legenda), onde grupos é uma lista de
+    {"tipo": "feed" | "story" | None, "paths": [Path, ...]}.
+    "tipo" None com mais de um path = carrossel de verdade (mesmo tipo,
+    várias fotos). "tipo" "story"/"feed" = grupo isolado daquele formato,
+    mesmo que só tenha 1 imagem.
     """
     extensoes_imagem = {".jpg", ".jpeg", ".png"}
     extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
-    paths: list[Path] = []
+    grupos: list[dict] = []
     caption_text = None
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
@@ -609,15 +621,34 @@ def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
 
             if imagens:
                 imagens.sort(key=ordem)
+                extraidos = []  # (Path, tipo|None)
                 for idx, nome_img in enumerate(imagens, 1):
                     ext = Path(nome_img).suffix
                     dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}_{idx:02d}{ext}"
                     dest.write_bytes(z.read(nome_img))
-                    paths.append(dest)
-                if len(paths) == 1:
-                    print(f" {prefixo.capitalize()} extraído do ZIP: {paths[0].name}")
+                    nome_lower = nome_img.lower()
+                    if "story" in nome_lower:
+                        tipo = "story"
+                    elif "feed" in nome_lower:
+                        tipo = "feed"
+                    else:
+                        tipo = None
+                    extraidos.append((dest, tipo))
+
+                sem_rotulo = [p for p, t in extraidos if t is None]
+                if sem_rotulo:
+                    grupos.append({"tipo": None, "paths": sem_rotulo})
+                for p, t in extraidos:
+                    if t is not None:
+                        grupos.append({"tipo": t, "paths": [p]})
+
+                if len(extraidos) == 1:
+                    print(f" {prefixo.capitalize()} extraído do ZIP: {extraidos[0][0].name}")
+                elif any(t is not None for _, t in extraidos):
+                    resumo = ", ".join(f"{p.name} ({t or 'carrossel'})" for p, t in extraidos)
+                    print(f" {len(extraidos)} imagens extraídas do ZIP (formatos separados): {resumo}")
                 else:
-                    print(f" {len(paths)} imagens extraídas do ZIP (carrossel), prefixo '{prefixo}'")
+                    print(f" {len(extraidos)} imagens extraídas do ZIP (carrossel), prefixo '{prefixo}'")
             elif videos:
                 # Vídeo como fallback se não tiver imagem
                 videos.sort(key=ordem)
@@ -625,7 +656,7 @@ def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
                 ext = Path(nome_vid).suffix
                 dest = DOWNLOAD_DIR / f"{prefixo}_{data_iso}{ext}"
                 dest.write_bytes(z.read(nome_vid))
-                paths.append(dest)
+                grupos.append({"tipo": None, "paths": [dest]})
                 print(f" Vídeo extraído do ZIP: {dest.name}")
             else:
                 print(f" [AVISO] ZIP sem imagens ou vídeos: {zip_path.name}")
@@ -660,7 +691,7 @@ def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
 
     except Exception as e:
         print(f" [AVISO] Erro ao extrair ZIP {zip_path.name}: {e}")
-    return paths, caption_text
+    return grupos, caption_text
 
 # ─── Scraping do Sismaker ─────────────────────────────────────────────────────
 
@@ -831,7 +862,8 @@ def buscar_posts(data_alvo: str = "") -> dict:
 
             def baixar_arquivo(idx: int, label: str) -> tuple:
                 """Clica em Baixar, salva e extrai ZIP se necessário.
-                Retorna: (lista_de_paths, str|None)
+                Retorna: (lista_de_grupos, str|None) — cada grupo é
+                {"tipo": "feed"|"story"|None, "paths": [Path, ...]}.
                 """
                 try:
                     with page.expect_download(timeout=25000) as dl_info:
@@ -841,74 +873,92 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     dl.save_as(str(dest_raw))
                     if dest_raw.suffix.lower() == ".zip":
                         return extrair_midias_do_zip(dest_raw, label, data_iso)
-                    return [dest_raw], None
+                    return [{"tipo": None, "paths": [dest_raw]}], None
                 except Exception as e:
                     print(f" [AVISO] Download {label}: {e}")
                     return [], None
 
-            arquivos_baixados = []  # lista de (lista_paths, caption_str, rotulo)
+            arquivos_baixados = []  # lista de (lista_de_grupos, caption_str, rotulo_botao)
             for i in range(qtd):  # baixa TODOS os botões disponíveis
                 rotulo = rotulo_botao(i)
-                paths, cap = baixar_arquivo(i, str(i))
-                if paths:
-                    arquivos_baixados.append((paths, cap or CAPTION_PADRAO, rotulo))
+                grupos, cap = baixar_arquivo(i, str(i))
+                if grupos:
+                    arquivos_baixados.append((grupos, cap or CAPTION_PADRAO, rotulo))
                 page.wait_for_timeout(800)
 
             # ── 6. Classificar feed vs story ────────────────────────────────
-            # Prioridade: o rótulo do Sismaker ("story"/"reels"/"feed") acima
-            # do botão — é o que decide de verdade lá no site. Só cai pro
-            # aspect ratio (Story ≈ 9:16, ratio < 0.7) quando não dá pra ler
-            # o rótulo, como rede de segurança.
+            # Prioridade: 1) o rótulo dentro do nome do arquivo no ZIP
+            # ("feed"/"story" — usado quando o mesmo ZIP traz a arte nos dois
+            # formatos, ver extrair_midias_do_zip); 2) o rótulo do Sismaker
+            # ("story"/"reels"/"feed") acima do botão; 3) aspect ratio (Story
+            # ≈ 9:16, ratio < 0.7) como rede de segurança quando nada mais
+            # deu pra ler.
             from PIL import Image as _PIL
             extensoes_video = {".mp4", ".mov", ".avi", ".mkv"}
-            for paths, cap, rotulo in arquivos_baixados:
-                eh_story_rotulo = "story" in rotulo
-                eh_reels_rotulo = "reels" in rotulo
-                eh_feed_rotulo = "feed" in rotulo
+            for grupos, cap, rotulo_btn in arquivos_baixados:
+                eh_story_rotulo_btn = "story" in rotulo_btn
+                eh_reels_rotulo_btn = "reels" in rotulo_btn
+                eh_feed_rotulo_btn = "feed" in rotulo_btn
 
-                if len(paths) > 1:
-                    # Carrossel — Instagram não tem story em carrossel via API,
-                    # então isso é sempre Feed independente do rótulo.
-                    resultado["feeds"].append({
-                        "paths": paths, "caption": cap, "is_video": False, "is_carousel": True,
-                    })
-                    print(f" → Feed (carrossel, {len(paths)} imagens) | legenda: {cap[:40]}...")
-                    continue
+                for grupo in grupos:
+                    paths = grupo["paths"]
+                    tipo_arquivo = grupo["tipo"]  # "feed"/"story"/None, vindo do nome do arquivo
 
-                arq = paths[0]
-                try:
-                    is_video = arq.suffix.lower() in extensoes_video
-
-                    if eh_story_rotulo:
-                        resultado["stories"].append({"paths": [arq], "caption": cap})
-                        print(f" → Story ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
-                              f"{arq.name} | legenda: {cap[:40]}...")
+                    if len(paths) > 1:
+                        # Carrossel de verdade — Instagram não tem story em
+                        # carrossel via API, então isso é sempre Feed.
+                        resultado["feeds"].append({
+                            "paths": paths, "caption": cap, "is_video": False, "is_carousel": True,
+                        })
+                        print(f" → Feed (carrossel, {len(paths)} imagens) | legenda: {cap[:40]}...")
                         continue
 
-                    if is_video or eh_reels_rotulo or eh_feed_rotulo:
-                        resultado["feeds"].append({
-                            "paths": [arq], "caption": cap, "is_video": is_video, "is_carousel": False,
-                        })
-                        print(f" → Feed ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
-                              f"{arq.name} | legenda: {cap[:40]}...")
-                        continue
+                    arq = paths[0]
+                    try:
+                        is_video = arq.suffix.lower() in extensoes_video
 
-                    # Sem rótulo legível (Sismaker mudou o layout?) — cai pro
-                    # aspect ratio como antes, só pra imagem (vídeo sem rótulo
-                    # vai pro Feed por padrão, é o caso mais comum).
-                    img = _PIL.open(arq)
-                    ratio = img.width / img.height
-                    img.close()
-                    if ratio < 0.7:
-                        resultado["stories"].append({"paths": [arq], "caption": cap})
-                        print(f" → Story ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
-                    else:
-                        resultado["feeds"].append({
-                            "paths": [arq], "caption": cap, "is_video": False, "is_carousel": False,
-                        })
-                        print(f" → Feed ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
-                except Exception as e:
-                    print(f" [AVISO] Não foi possível classificar {arq.name}: {e}")
+                        if tipo_arquivo == "story":
+                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            print(f" → Story (rótulo no nome do arquivo): {arq.name} | legenda: {cap[:40]}...")
+                            continue
+
+                        if tipo_arquivo == "feed":
+                            resultado["feeds"].append({
+                                "paths": [arq], "caption": cap, "is_video": is_video, "is_carousel": False,
+                            })
+                            print(f" → Feed (rótulo no nome do arquivo): {arq.name} | legenda: {cap[:40]}...")
+                            continue
+
+                        if eh_story_rotulo_btn:
+                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            print(f" → Story ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
+                                  f"{arq.name} | legenda: {cap[:40]}...")
+                            continue
+
+                        if is_video or eh_reels_rotulo_btn or eh_feed_rotulo_btn:
+                            resultado["feeds"].append({
+                                "paths": [arq], "caption": cap, "is_video": is_video, "is_carousel": False,
+                            })
+                            print(f" → Feed ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
+                                  f"{arq.name} | legenda: {cap[:40]}...")
+                            continue
+
+                        # Sem rótulo legível em nenhum nível (Sismaker mudou o
+                        # layout?) — cai pro aspect ratio como antes, só pra
+                        # imagem (vídeo sem rótulo vai pro Feed por padrão).
+                        img = _PIL.open(arq)
+                        ratio = img.width / img.height
+                        img.close()
+                        if ratio < 0.7:
+                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            print(f" → Story ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
+                        else:
+                            resultado["feeds"].append({
+                                "paths": [arq], "caption": cap, "is_video": False, "is_carousel": False,
+                            })
+                            print(f" → Feed ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
+                    except Exception as e:
+                        print(f" [AVISO] Não foi possível classificar {arq.name}: {e}")
 
         except Exception as e:
             print(f" [ERRO] Sismaker: {e}")
