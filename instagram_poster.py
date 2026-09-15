@@ -706,6 +706,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
     {
         "feeds": [{"paths": [Path, ...], "caption": str, "is_video": bool, "is_carousel": bool}, ...],
         "stories": [{"paths": [Path], "caption": str}, ...],
+        "avisos": [str, ...],  # ver comentário na classificação, mais abaixo
     }
     """
     hoje_dt = datetime.now(TZ_SP)
@@ -724,7 +725,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
         data_iso = hoje_dt.strftime("%Y-%m-%d")  # "2026-04-03"
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    resultado = {"feeds": [], "stories": []}
+    resultado = {"feeds": [], "stories": [], "avisos": []}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -958,6 +959,11 @@ def buscar_posts(data_alvo: str = "") -> dict:
                         # Sem rótulo legível em nenhum nível (Sismaker mudou o
                         # layout?) — cai pro aspect ratio como antes, só pra
                         # imagem (vídeo sem rótulo vai pro Feed por padrão).
+                        # Isso é um CHUTE, não uma leitura confiável — regra
+                        # criada em 15/09/2026 depois de 3 dias seguidos com
+                        # Feed/Story trocados: sempre que a classificação cai
+                        # aqui, registra um aviso que vai junto na notificação
+                        # do WhatsApp, pra alguém conferir aquele post à mão.
                         img = _PIL.open(arq)
                         ratio = img.width / img.height
                         img.close()
@@ -969,8 +975,14 @@ def buscar_posts(data_alvo: str = "") -> dict:
                                 "paths": [arq], "caption": cap, "is_video": False, "is_carousel": False,
                             })
                             print(f" → Feed ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
+                        resultado["avisos"].append(
+                            f"{arq.name}: classificado só pela proporção da imagem "
+                            f"({ratio:.2f}) — Sismaker não deu nenhum rótulo Feed/Story pra "
+                            f"esse arquivo. Confira se foi pro lugar certo."
+                        )
                     except Exception as e:
                         print(f" [AVISO] Não foi possível classificar {arq.name}: {e}")
+                        resultado["avisos"].append(f"{arq.name}: falha ao classificar ({e}) — confira manualmente.")
 
         except Exception as e:
             print(f" [ERRO] Sismaker: {e}")
@@ -1020,6 +1032,7 @@ def main():
 
     feeds = posts["feeds"]  # lista de {"paths": [...], "caption": str, "is_video": bool, "is_carousel": bool}
     stories = posts["stories"]  # lista de {"paths": [...], "caption": str}
+    avisos_classificacao = posts.get("avisos", [])
 
     if not feeds and not stories:
         print(f"\n Nenhum arquivo baixado para {label}. Encerrando.")
@@ -1145,6 +1158,12 @@ def main():
     for loja, status in resultados.items():
         icone = "✓" if "OK" in str(status) else "✗"
         linhas.append(f" {icone} @{loja}: {status}")
+
+    if avisos_classificacao:
+        linhas.append("\n⚠️ *Confira estes posts* (não deu pra ter certeza se era Feed ou Story):")
+        for aviso in avisos_classificacao:
+            linhas.append(f" • {aviso}")
+
     linhas.append("\n_Enviado automaticamente pelo bot Espaço Laser_")
 
     print("\n Enviando notificação WhatsApp...")
