@@ -905,8 +905,20 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     tipo_arquivo = grupo["tipo"]  # "feed"/"story"/None, vindo do nome do arquivo
 
                     if len(paths) > 1:
-                        # Carrossel de verdade — Instagram não tem story em
-                        # carrossel via API, então isso é sempre Feed.
+                        # Mais de uma imagem no grupo — só é carrossel de Feed
+                        # de verdade quando NADA (nem o nome dos arquivos, nem
+                        # o rótulo do botão "Baixar") diz que é Story. Um
+                        # botão "STORIES: ..." com várias imagens dentro (ex:
+                        # 15/09/2026) NÃO é carrossel — Instagram não tem
+                        # carrossel de story via API — é uma imagem por
+                        # story, postadas em sequência.
+                        if tipo_arquivo == "story" or (tipo_arquivo is None and eh_story_rotulo_btn):
+                            for p in paths:
+                                resultado["stories"].append({"paths": [p], "caption": cap})
+                            print(f" → Story ({len(paths)} imagens em sequência, rótulo "
+                                  f"{'no nome do arquivo' if tipo_arquivo else 'Sismaker'}) | legenda: {cap[:40]}...")
+                            continue
+
                         resultado["feeds"].append({
                             "paths": paths, "caption": cap, "is_video": False, "is_carousel": True,
                         })
