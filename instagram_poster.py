@@ -581,6 +581,24 @@ def postar_carrossel_instagram(ig_user_id: str, token: str, image_urls: list, ca
 
 # ─── Helpers de arquivo ──────────────────────────────────────────────────────
 
+def _texto_de_pdf(pdf_bytes: bytes) -> str | None:
+    """Extrai o texto de um PDF (usa pdfplumber se disponível). Compartilhado
+    entre a legenda de dentro de um ZIP e um PDF baixado avulso (ver
+    baixar_arquivo — o Sismaker às vezes manda a legenda como seu próprio
+    botão "Baixar" separado da mídia, em vez de dentro do mesmo ZIP)."""
+    try:
+        import io
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            texto = "\n".join(pg.extract_text() or "" for pg in pdf.pages).strip()
+        return texto if len(texto) > 5 else None
+    except ImportError:
+        print(" [AVISO] pdfplumber não instalado — legenda PDF ignorada")
+        return None
+    except Exception as e:
+        print(f" [AVISO] Erro ao ler PDF: {e}")
+        return None
+
 def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
     """Extrai as imagens (uma, várias — carrossel — ou uma combinação de
     Feed+Story) ou um vídeo, e tenta extrair legenda (TXT/PDF) de um ZIP.
@@ -673,21 +691,10 @@ def extrair_midias_do_zip(zip_path: Path, prefixo: str, data_iso: str) -> tuple:
 
             # Tenta extrair legenda de PDF (usa pdfplumber se disponível)
             if not caption_text and pdfs:
-                try:
-                    import io
-                    import pdfplumber
-                    pdf_bytes = z.read(pdfs[0])
-                    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                        texto_pdf = "\n".join(
-                            pg.extract_text() or "" for pg in pdf.pages
-                        ).strip()
-                    if len(texto_pdf) > 5:
-                        caption_text = texto_pdf
-                        print(f" Legenda PDF encontrada no ZIP ({len(texto_pdf)} chars)")
-                except ImportError:
-                    print(f" [AVISO] pdfplumber não instalado — legenda PDF ignorada")
-                except Exception as e:
-                    print(f" [AVISO] Erro ao ler PDF do ZIP: {e}")
+                texto_pdf = _texto_de_pdf(z.read(pdfs[0]))
+                if texto_pdf:
+                    caption_text = texto_pdf
+                    print(f" Legenda PDF encontrada no ZIP ({len(texto_pdf)} chars)")
 
     except Exception as e:
         print(f" [AVISO] Erro ao extrair ZIP {zip_path.name}: {e}")
@@ -874,18 +881,43 @@ def buscar_posts(data_alvo: str = "") -> dict:
                     dl.save_as(str(dest_raw))
                     if dest_raw.suffix.lower() == ".zip":
                         return extrair_midias_do_zip(dest_raw, label, data_iso)
+                    if dest_raw.suffix.lower() == ".pdf":
+                        # Botão "Baixar" próprio só pra legenda, sem mídia
+                        # nenhuma (confirmado em 22/09/2026 — vídeo e legenda
+                        # vieram em botões separados, não dentro do mesmo
+                        # ZIP). Nenhum grupo de mídia, só a legenda em si.
+                        texto = _texto_de_pdf(dest_raw.read_bytes())
+                        if texto:
+                            print(f" Legenda PDF avulsa encontrada: {dest_raw.name} ({len(texto)} chars)")
+                        return [], texto
                     return [{"tipo": None, "paths": [dest_raw]}], None
                 except Exception as e:
                     print(f" [AVISO] Download {label}: {e}")
                     return [], None
 
             arquivos_baixados = []  # lista de (lista_de_grupos, caption_str, rotulo_botao)
+            legendas_avulsas = []  # PDFs de legenda baixados em botão próprio, sem mídia junto
             for i in range(qtd):  # baixa TODOS os botões disponíveis
                 rotulo = rotulo_botao(i)
                 grupos, cap = baixar_arquivo(i, str(i))
                 if grupos:
                     arquivos_baixados.append((grupos, cap or CAPTION_PADRAO, rotulo))
+                elif cap:
+                    legendas_avulsas.append(cap)
                 page.wait_for_timeout(800)
+
+            # Um botão "Baixar" só de legenda (PDF avulso, sem mídia) serve
+            # pra alguma outra mídia do mesmo card — aplica na primeira que
+            # ainda estiver com a legenda genérica (sinal de que não achou
+            # legenda própria). Não é garantido casar 100% certo quando há
+            # mais de uma mídia sem legenda, mas resolve o caso comum
+            # (1 mídia + 1 legenda avulsa) confirmado em 22/09/2026.
+            for legenda in legendas_avulsas:
+                for idx, (grupos, cap, rotulo) in enumerate(arquivos_baixados):
+                    if cap == CAPTION_PADRAO:
+                        arquivos_baixados[idx] = (grupos, legenda, rotulo)
+                        print(f" Legenda avulsa aplicada a um dos itens baixados.")
+                        break
 
             # ── 6. Classificar feed vs story ────────────────────────────────
             # Prioridade: 1) o rótulo dentro do nome do arquivo no ZIP
