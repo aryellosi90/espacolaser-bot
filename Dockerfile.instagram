@@ -20,6 +20,8 @@ COPY instagram_poster.py .
 COPY token_helper.py .
 COPY write_env.py .
 COPY fileserver.py .
+# torre_run.py: avisa a Torre de Controle como foi cada execução do poster
+COPY torre_run.py .
 
 # Agendamento: roda todo dia às 10h, 14h, 18h e 20h (horário de Brasília = UTC-3)
 # Instala cron
@@ -31,7 +33,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cron tzd
 # garantir horário correto. ja_postou_hoje()/marcar_postado() já cuidam de
 # não postar de novo nas execuções seguintes do mesmo dia, então rodar mais
 # vezes só aumenta a chance de pegar a arte assim que o Sismaker publicar.
-RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /app && python instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
+RUN printf 'TZ=America/Sao_Paulo\n0 10,14,18,20 * * * . /etc/container_env; cd /app && python torre_run.py midias instagram_poster.py >> /app/poster.log 2>&1\n' | crontab -
 
 # Variáveis de ambiente esperadas no Railway (Service → Variables):
 # SISMAKER_LOGIN     — e-mail de login no Sismaker (obrigatório)

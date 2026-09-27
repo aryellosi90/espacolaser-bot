@@ -42,6 +42,14 @@ REGRAS = {
         (r"Webhook \[\w+\]: 2\d\d", "ok", "enviou {n_ok} relatório(s) no grupo"),
         (r"Concluído", "ok", "concluiu sem enviar nada"),
     ],
+    # Mídias Digitais = instagram_poster.py (Sismaker → Instagram das lojas)
+    "midias": [
+        (r"^\[ERRO\]", "error", "falhou: {linha}"),
+        (r"Falha no upload de todas", "error", "não conseguiu subir as imagens"),
+        (r"publicado! Post ID", "ok", "publicou {n_pub} post(s) no Instagram"),
+        (r"já foram publicados anteriormente", "ok", "posts de hoje já estavam publicados"),
+        (r"Nenhum arquivo baixado", "ok", "nenhuma arte no Sismaker ainda"),
+    ],
 }
 
 
@@ -66,11 +74,12 @@ def avisar(payload):
 def classificar(agente, linhas, codigo):
     regras = REGRAS.get(agente, [])
     n_ok = sum(1 for l in linhas if re.search(r"Webhook \[\w+\]: 2\d\d", l))
+    n_pub = sum(1 for l in linhas if "publicado! Post ID" in l)
     achados = []
     for padrao, status, resumo in regras:
         for l in linhas:
             if re.search(padrao, l.strip()):
-                achados.append((status, resumo.format(linha=l.strip()[:120], n_ok=n_ok)))
+                achados.append((status, resumo.format(linha=l.strip()[:120], n_ok=n_ok, n_pub=n_pub)))
                 break
     for prioridade in ("error", "warn", "ok"):
         for status, resumo in achados:
