@@ -1121,7 +1121,15 @@ def main():
     print("\n[3/3] Postando no Instagram...")
     resultados = {}
 
+    # LOJAS_DESATIVADAS (Railway): lojas que saíram do grupo, separadas por
+    # vírgula, ex: "espacolaser.monlevade". Ficam de fora sem mexer no
+    # TOKENS_JSON — para voltar a postar, basta tirar o nome da variável.
+    desativadas = {l.strip() for l in os.environ.get("LOJAS_DESATIVADAS", "").split(",") if l.strip()}
+
     for loja, conta in config["accounts"].items():
+        if loja in desativadas:
+            print(f"\n [{loja}] fora do grupo (LOJAS_DESATIVADAS) — não posta")
+            continue
         if conta.get("disabled"):
             motivo = conta.get("disabled_reason", "desabilitado manualmente")
             print(f"\n [{loja}] DESABILITADO — {motivo[:80]}")
