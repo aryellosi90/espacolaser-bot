@@ -3,5 +3,5 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python bot.py"
+startCommand = "python torre_run.py bot_venda bot.py"
 restartPolicyType = "never"
