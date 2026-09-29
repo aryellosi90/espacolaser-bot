@@ -435,13 +435,19 @@ def postar_instagram(ig_user_id: str, token: str, image_url: str, caption: str,
     else:
         tipo = "Feed"
 
-    # Monta parâmetros conforme o tipo de mídia
-    if is_video:
+    # Monta parâmetros conforme o tipo de mídia. is_story tem prioridade
+    # sobre is_video no media_type — video_url + media_type=REELS publicava
+    # um Reels em vez de Story quando o story era vídeo (bug encontrado em
+    # 29/09/2026: story em vídeo derrubava o script inteiro em preparar_imagem,
+    # que só sabe abrir imagem — corrigido lá; aqui é o passo seguinte, postar
+    # esse vídeo como story de verdade).
+    if is_story:
+        api_params = {"access_token": token, "media_type": "STORIES"}
+        api_params["video_url" if is_video else "image_url"] = image_url
+        data_body = {}
+    elif is_video:
         api_params = {"access_token": token, "video_url": image_url, "media_type": "REELS"}
         data_body = {"caption": caption}
-    elif is_story:
-        api_params = {"access_token": token, "image_url": image_url, "media_type": "STORIES"}
-        data_body = {}
     else:
         api_params = {"access_token": token, "image_url": image_url}
         data_body = {"caption": caption}
@@ -947,7 +953,10 @@ def buscar_posts(data_alvo: str = "") -> dict:
                         # story, postadas em sequência.
                         if tipo_arquivo == "story" or (tipo_arquivo is None and eh_story_rotulo_btn):
                             for p in paths:
-                                resultado["stories"].append({"paths": [p], "caption": cap})
+                                resultado["stories"].append({
+                                    "paths": [p], "caption": cap,
+                                    "is_video": p.suffix.lower() in extensoes_video,
+                                })
                             print(f" → Story ({len(paths)} imagens em sequência, rótulo "
                                   f"{'no nome do arquivo' if tipo_arquivo else 'Sismaker'}) | legenda: {cap[:40]}...")
                             continue
@@ -963,7 +972,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
                         is_video = arq.suffix.lower() in extensoes_video
 
                         if tipo_arquivo == "story":
-                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            resultado["stories"].append({"paths": [arq], "caption": cap, "is_video": is_video})
                             print(f" → Story (rótulo no nome do arquivo): {arq.name} | legenda: {cap[:40]}...")
                             continue
 
@@ -975,7 +984,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
                             continue
 
                         if eh_story_rotulo_btn:
-                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            resultado["stories"].append({"paths": [arq], "caption": cap, "is_video": is_video})
                             print(f" → Story ({'vídeo' if is_video else 'imagem'}, rótulo Sismaker): "
                                   f"{arq.name} | legenda: {cap[:40]}...")
                             continue
@@ -1000,7 +1009,7 @@ def buscar_posts(data_alvo: str = "") -> dict:
                         ratio = img.width / img.height
                         img.close()
                         if ratio < 0.7:
-                            resultado["stories"].append({"paths": [arq], "caption": cap})
+                            resultado["stories"].append({"paths": [arq], "caption": cap, "is_video": False})
                             print(f" → Story ({ratio:.2f}, sem rótulo): {arq.name} | legenda: {cap[:40]}...")
                         else:
                             resultado["feeds"].append({
@@ -1106,12 +1115,19 @@ def main():
             feed_posts.append({"urls": [urls[0]], "caption": item["caption"], "is_video": False, "is_carousel": False})
             print(f" Feed {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
-    story_posts = []  # (url, caption)
+    story_posts = []  # (url, caption, is_video)
     for i, item in enumerate(stories):
-        url = upload_imgbb(preparar_imagem(item["paths"][0], f"story_{i}"), imgbb_key)
+        # preparar_imagem só sabe abrir imagem (usa PIL) — vídeo vai direto
+        # pro upload, sem o recorte de aspect ratio que só se aplica a imagem.
+        story_is_video = item.get("is_video", False)
+        if story_is_video:
+            url = upload_imgbb(item["paths"][0], imgbb_key)
+        else:
+            url = upload_imgbb(preparar_imagem(item["paths"][0], f"story_{i}"), imgbb_key)
         if url:
-            story_posts.append((url, item["caption"]))
-            print(f" Story {i+1} URL ok | legenda: {item['caption'][:50]}...")
+            story_posts.append((url, item["caption"], story_is_video))
+            tipo_str = "Vídeo" if story_is_video else "Story"
+            print(f" {tipo_str} {i+1} URL ok | legenda: {item['caption'][:50]}...")
 
     if not feed_posts and not story_posts:
         print(" Falha no upload de todas as imagens. Encerrando.")
@@ -1161,8 +1177,9 @@ def main():
             ok_feeds.append(ok)
             time.sleep(3)
 
-        for story_url, cap in story_posts:
-            ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True, auth_type=auth_type)
+        for story_url, cap, story_is_video in story_posts:
+            ok = postar_instagram(ig_user_id, token, story_url, cap, is_story=True,
+                                   is_video=story_is_video, auth_type=auth_type)
             ok_stories.append(ok)
             time.sleep(3)
 
@@ -1210,4 +1227,16 @@ def main():
     enviar_whatsapp("\n".join(linhas))
 
 if __name__ == "__main__":
-    main()
+    # Rede de segurança: um erro não previsto (ex: o de 29/09/2026, vídeo
+    # de story derrubando o script em preparar_imagem) não pode passar em
+    # silêncio até o próximo horário do cron — avisa no WhatsApp na hora.
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        enviar_whatsapp(
+            f"🚨 *Instagram Poster quebrou* ({datetime.now(TZ_SP).strftime('%d/%m %H:%M')})\n\n"
+            f"Erro: {e}\n\n_Confira o log do Railway (attractive-enjoyment)._"
+        )
+        raise
